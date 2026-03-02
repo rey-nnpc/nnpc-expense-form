@@ -1,6 +1,27 @@
 "use client";
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import {
+  ArrowRight,
+  LockKeyhole,
+  Mail,
+  ShieldCheck,
+  Sparkles,
+  Wallet,
+} from "lucide-react";
+import { ThemeSettingsSheet } from "@/components/theme-settings-sheet";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 type AuthMode = "login" | "signup";
 
@@ -186,10 +207,20 @@ export default function AuthGate({
   if (!isReady) {
     return (
       <div className="page-shell min-h-screen">
-        <div className="mx-auto flex min-h-screen max-w-3xl items-center justify-center px-5 py-8 sm:px-8">
-          <div className="w-full rounded-[2rem] border border-[var(--line)] bg-[var(--card)] p-8 text-sm text-[var(--muted)]">
-            Loading...
-          </div>
+        <div className="mx-auto flex min-h-screen w-full max-w-5xl items-center justify-center px-4 py-8 sm:px-6">
+          <Card className="premium-panel w-full max-w-lg rounded-[2rem] border-border/60 py-0">
+            <CardContent className="px-6 py-12 text-center sm:px-10">
+              <Badge className="rounded-full px-3 py-1" variant="secondary">
+                Initializing
+              </Badge>
+              <p className="mt-5 font-serif text-3xl tracking-tight text-foreground">
+                Loading secure workspace
+              </p>
+              <p className="mt-3 text-sm leading-7 text-muted-foreground">
+                Preparing the expense console and restoring any stored session.
+              </p>
+            </CardContent>
+          </Card>
         </div>
       </div>
     );
@@ -198,140 +229,208 @@ export default function AuthGate({
   if (!session) {
     return (
       <div className="page-shell min-h-screen">
-        <div className="mx-auto grid min-h-screen w-full max-w-6xl gap-8 px-5 py-6 sm:px-8 lg:grid-cols-[1.1fr_0.9fr] lg:py-8">
-          <section className="flex flex-col justify-between rounded-[2rem] border border-[var(--line)] bg-[var(--card)] p-8 sm:p-10">
-            <div className="space-y-8">
+        <div className="mx-auto flex w-full max-w-7xl justify-end px-4 pt-5 sm:px-6 lg:px-8 lg:pt-8">
+          <ThemeSettingsSheet />
+        </div>
+
+        <div className="mx-auto grid w-full max-w-7xl gap-5 px-4 pb-8 pt-4 sm:px-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)] lg:px-8 lg:pb-10">
+          <section className="premium-panel rounded-[2rem] border border-border/60 p-6 sm:p-8 lg:p-10">
+            <div className="flex flex-col gap-8">
               <div className="space-y-4">
-                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--muted)]">
-                  NNPC Daily Expense
-                </p>
-                <h1 className="max-w-2xl text-4xl font-semibold tracking-[-0.03em] text-[var(--foreground)] sm:text-5xl">
-                  Daily totals on the dashboard, full detail inside each date.
-                </h1>
-                <p className="max-w-xl text-base leading-8 text-[var(--muted)]">
-                  Sign in with Supabase, choose a date on the dashboard, then
-                  open that single day to manage its expenses.
-                </p>
-              </div>
-
-              <div className="grid gap-3 sm:max-w-xl">
-                <div className="rounded-3xl border border-[var(--line)] bg-[var(--surface)] px-4 py-4 text-sm text-[var(--foreground)]">
-                  Dashboard shows only date and total.
-                </div>
-                <div className="rounded-3xl border border-[var(--line)] bg-[var(--surface)] px-4 py-4 text-sm text-[var(--foreground)]">
-                  Each date opens into its own expense route.
-                </div>
-                <div className="rounded-3xl border border-[var(--line)] bg-[var(--surface)] px-4 py-4 text-sm text-[var(--foreground)]">
-                  Expense rows stay compact and collapsible.
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-10 border-t border-[var(--line)] pt-5 text-sm text-[var(--muted)]">
-              Prototype data is stored locally. Authentication still uses your
-              Supabase project.
-            </div>
-          </section>
-
-          <section className="rounded-[2rem] border border-[var(--line)] bg-[var(--card)] p-8 sm:p-10">
-            <div className="flex items-center gap-2 rounded-full bg-[var(--surface)] p-1">
-              <button
-                className={`flex-1 rounded-full px-4 py-2 text-sm font-medium transition ${
-                  authMode === "login"
-                    ? "bg-[var(--foreground)] text-white"
-                    : "text-[var(--muted)]"
-                }`}
-                type="button"
-                onClick={() => {
-                  setAuthMode("login");
-                  setAuthMessage(null);
-                }}
-              >
-                Log in
-              </button>
-              <button
-                className={`flex-1 rounded-full px-4 py-2 text-sm font-medium transition ${
-                  authMode === "signup"
-                    ? "bg-[var(--foreground)] text-white"
-                    : "text-[var(--muted)]"
-                }`}
-                type="button"
-                onClick={() => {
-                  setAuthMode("signup");
-                  setAuthMessage(null);
-                }}
-              >
-                Sign up
-              </button>
-            </div>
-
-            <div className="mt-8 space-y-2">
-              <h2 className="text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">
-                {authMode === "login" ? "Access dashboard" : "Create your account"}
-              </h2>
-              <p className="text-sm leading-7 text-[var(--muted)]">
-                Supabase email/password only.
-              </p>
-            </div>
-
-            <form className="mt-8 space-y-4" onSubmit={handleAuthSubmit}>
-              <label className="block">
-                <span className="mb-2 block text-sm font-medium text-[var(--foreground)]">
-                  Email
-                </span>
-                <input
-                  className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-sm outline-none transition focus:border-[var(--foreground)]"
-                  type="email"
-                  autoComplete="email"
-                  placeholder="name@company.com"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-2 block text-sm font-medium text-[var(--foreground)]">
-                  Password
-                </span>
-                <input
-                  className="w-full rounded-2xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-sm outline-none transition focus:border-[var(--foreground)]"
-                  type="password"
-                  autoComplete={authMode === "login" ? "current-password" : "new-password"}
-                  placeholder="At least 8 characters"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                />
-              </label>
-
-              {authMessage ? (
-                <div
-                  className={`rounded-2xl px-4 py-3 text-sm ${
-                    authMessage.tone === "error"
-                      ? "bg-[#fff1f1] text-[#8c2f2f]"
-                      : "bg-[var(--surface)] text-[var(--foreground)]"
-                  }`}
+                <Badge
+                  className="rounded-full border-white/10 bg-white/5 px-4 py-1 text-[0.7rem] uppercase tracking-[0.28em] text-primary"
+                  variant="outline"
                 >
-                  {authMessage.text}
-                </div>
-              ) : null}
+                  NNPC daily expense
+                </Badge>
 
-              <button
-                className="w-full rounded-2xl bg-[var(--foreground)] px-4 py-3 text-sm font-medium text-white transition hover:opacity-92 disabled:cursor-not-allowed disabled:opacity-60"
-                type="submit"
-                disabled={isSubmittingAuth}
-              >
-                {isSubmittingAuth
-                  ? "Working..."
-                  : authMode === "login"
-                    ? "Log in"
-                    : "Create account"}
-              </button>
-            </form>
+                <div className="space-y-4">
+                  <p className="text-xs font-medium uppercase tracking-[0.3em] text-muted-foreground">
+                    Authenticated daily reimbursements
+                  </p>
+                  <h1 className="max-w-3xl font-serif text-4xl tracking-[-0.03em] text-foreground sm:text-5xl lg:text-6xl">
+                    A cleaner way to move from totals to the full expense breakdown.
+                  </h1>
+                  <p className="max-w-2xl text-sm leading-7 text-muted-foreground sm:text-base">
+                    Sign in with Supabase, select a date from the dashboard, and manage
+                    all receipts and remarks in a focused single-day editor.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FeatureCard
+                  title="Concise dashboard"
+                  description="Track dates and totals without clutter, then open detail only when needed."
+                  icon={<Wallet className="size-4" />}
+                />
+                <FeatureCard
+                  title="Secure entry"
+                  description="Email and password auth is handled directly against your Supabase project."
+                  icon={<ShieldCheck className="size-4" />}
+                />
+                <FeatureCard
+                  title="Receipt workflow"
+                  description="Attach image receipts per row and keep the draft recoverable in local storage."
+                  icon={<Sparkles className="size-4" />}
+                />
+                <FeatureCard
+                  title="Theme control"
+                  description="Dark mode is the default canvas, with a light mode toggle in Settings."
+                  icon={<LockKeyhole className="size-4" />}
+                />
+              </div>
+
+              <div className="rounded-3xl border border-white/10 bg-background/65 px-5 py-5">
+                <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
+                  Prototype behavior
+                </p>
+                <p className="mt-3 text-sm leading-7 text-foreground">
+                  Local browser storage keeps the expense drafts. Authentication still
+                  depends on your Supabase URL and publishable key from `.env.local`.
+                </p>
+              </div>
+            </div>
           </section>
+
+          <Card className="premium-panel rounded-[2rem] border-border/60 py-0">
+            <CardHeader className="gap-5 border-b border-border/60 px-6 py-6">
+              <div className="flex items-center gap-1 rounded-full border border-white/10 bg-background/70 p-1">
+                <Button
+                  className={cn(
+                    "h-10 flex-1 rounded-full px-4 shadow-none",
+                    authMode !== "login" &&
+                      "bg-transparent text-muted-foreground hover:bg-background/80 hover:text-foreground",
+                  )}
+                  type="button"
+                  variant={authMode === "login" ? "default" : "ghost"}
+                  onClick={() => {
+                    setAuthMode("login");
+                    setAuthMessage(null);
+                  }}
+                >
+                  Log in
+                </Button>
+                <Button
+                  className={cn(
+                    "h-10 flex-1 rounded-full px-4 shadow-none",
+                    authMode !== "signup" &&
+                      "bg-transparent text-muted-foreground hover:bg-background/80 hover:text-foreground",
+                  )}
+                  type="button"
+                  variant={authMode === "signup" ? "default" : "ghost"}
+                  onClick={() => {
+                    setAuthMode("signup");
+                    setAuthMessage(null);
+                  }}
+                >
+                  Sign up
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                <CardTitle className="font-serif text-3xl tracking-tight">
+                  {authMode === "login" ? "Access the dashboard" : "Create your workspace"}
+                </CardTitle>
+                <CardDescription className="text-sm leading-7">
+                  Supabase email/password authentication only. The interface stays
+                  mobile-friendly and dark-first after sign-in.
+                </CardDescription>
+              </div>
+            </CardHeader>
+
+            <CardContent className="px-6 py-6">
+              <form className="space-y-5" onSubmit={handleAuthSubmit}>
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-foreground">Email</span>
+                  <div className="relative">
+                    <Mail className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      className="h-12 rounded-2xl border-white/10 bg-background/75 pl-11"
+                      type="email"
+                      autoComplete="email"
+                      placeholder="name@company.com"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                    />
+                  </div>
+                </label>
+
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-foreground">Password</span>
+                  <div className="relative">
+                    <LockKeyhole className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      className="h-12 rounded-2xl border-white/10 bg-background/75 pl-11"
+                      type="password"
+                      autoComplete={
+                        authMode === "login" ? "current-password" : "new-password"
+                      }
+                      placeholder="At least 8 characters"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                    />
+                  </div>
+                </label>
+
+                {authMessage ? (
+                  <Alert
+                    className={cn(
+                      "rounded-2xl border-white/10",
+                      authMessage.tone === "error"
+                        ? "border-destructive/30 bg-destructive/10"
+                        : "bg-background/70",
+                    )}
+                    variant={authMessage.tone === "error" ? "destructive" : "default"}
+                  >
+                    <AlertTitle>
+                      {authMessage.tone === "error" ? "Authentication issue" : "Next step"}
+                    </AlertTitle>
+                    <AlertDescription>{authMessage.text}</AlertDescription>
+                  </Alert>
+                ) : null}
+
+                <Button
+                  className="h-12 w-full rounded-2xl text-sm"
+                  disabled={isSubmittingAuth}
+                  type="submit"
+                >
+                  {isSubmittingAuth
+                    ? "Working..."
+                    : authMode === "login"
+                      ? "Log in"
+                      : "Create account"}
+                  <ArrowRight className="size-4" />
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
         </div>
       </div>
     );
   }
 
   return <>{children({ session, logout })}</>;
+}
+
+function FeatureCard({
+  title,
+  description,
+  icon,
+}: {
+  title: string;
+  description: string;
+  icon: ReactNode;
+}) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-background/65 p-5">
+      <div className="flex items-center gap-3">
+        <span className="flex size-9 items-center justify-center rounded-2xl bg-primary/12 text-primary">
+          {icon}
+        </span>
+        <p className="text-sm font-medium text-foreground">{title}</p>
+      </div>
+      <p className="mt-3 text-sm leading-7 text-muted-foreground">{description}</p>
+    </div>
+  );
 }

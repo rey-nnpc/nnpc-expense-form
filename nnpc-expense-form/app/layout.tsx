@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Sarabun, Taviraj } from "next/font/google";
+import type { ReactNode } from "react";
+import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
 const sarabun = Sarabun({
@@ -23,12 +25,19 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode;
+  children: ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={`${sarabun.variable} ${taviraj.variable} antialiased`}>
-        {children}
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          disableTransitionOnChange
+          enableSystem={false}
+        >
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );
