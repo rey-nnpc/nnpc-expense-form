@@ -20,6 +20,15 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Supabase
+
+Database migrations now live in `supabase/migrations`.
+
+- Create new schema changes as timestamped SQL files, for example `20260304115354_initial_current_scope.sql`.
+- Treat `supabase/schema.sql` as a schema snapshot of the latest migration, not the primary place to author changes.
+- The current migrations cover the full current app scope: auth-linked profiles, company headers, expense reports, expense items, receipt metadata, Storage buckets, and storage policies.
+- Apply pending migrations with the Supabase CLI, for example `supabase db push`.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
