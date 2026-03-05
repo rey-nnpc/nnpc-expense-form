@@ -74,6 +74,8 @@ import {
 } from "../lib/report-data";
 
 const EMPTY_COMPANY_VALUE = "__none__";
+const PRIMARY_EXPORT_ROW_LIMIT = 4;
+const RECEIPTS_PER_PAGE = 4;
 
 const EXPORT_COPY: Record<
   ExportLanguage,
@@ -94,6 +96,7 @@ const EXPORT_COPY: Record<
     noteFallback: string;
     receiptLabel: string;
     expenseLabel: string;
+    receiptsSheetTitle: string;
     signatures: [string, string, string];
     signatureHint: string;
   }
@@ -115,6 +118,7 @@ const EXPORT_COPY: Record<
     noteFallback: "No additional note.",
     receiptLabel: "Receipt Image",
     expenseLabel: "Expense",
+    receiptsSheetTitle: "Receipt attachments",
     signatures: ["Requester", "Cash recipient", "Approver"],
     signatureHint: "Sign here",
   },
@@ -135,6 +139,7 @@ const EXPORT_COPY: Record<
     noteFallback: "ไม่มีหมายเหตุเพิ่มเติม",
     receiptLabel: "รูปใบเสร็จ",
     expenseLabel: "รายการ",
+    receiptsSheetTitle: "รูปใบเสร็จแนบ",
     signatures: ["ผู้เสนอเบิก", "พนักงานผู้รับเงิน", "ผู้อนุมัติ"],
     signatureHint: "ลงชื่อ",
   },
@@ -445,6 +450,9 @@ function ProtectedExpenseEditor({
   const totalAmount = rows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const totalReceipts = rows.reduce((sum, row) => sum + row.receipts.length, 0);
   const exportCopy = EXPORT_COPY[exportLanguage];
+  const printableFormRows = populatedRows.slice(0, PRIMARY_EXPORT_ROW_LIMIT);
+  const overflowRows = populatedRows.slice(PRIMARY_EXPORT_ROW_LIMIT);
+  const overflowAmount = overflowRows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const printableReceipts = populatedRows.flatMap((row) =>
     row.receipts.map((receipt, receiptIndex) => ({
       key: `${row.id}-${receipt.id}`,
@@ -455,6 +463,7 @@ function ProtectedExpenseEditor({
       row,
     })),
   );
+  const receiptPages = chunkEntries(printableReceipts, RECEIPTS_PER_PAGE);
 
   const updateRow = <K extends keyof ExpenseRow,>(
     rowId: number,
@@ -1085,8 +1094,8 @@ function ProtectedExpenseEditor({
                         <Globe2 className="size-4" />
                       </span>
                       <p className="text-sm leading-7 text-foreground">
-                        The print layout uses the selected language, reserves signature
-                        lines, and adds each receipt image after the main form.
+                        The print layout keeps the form on one compact signature page,
+                        then packs up to four receipt images on each following page.
                       </p>
                     </div>
                   </div>
@@ -1117,10 +1126,10 @@ function ProtectedExpenseEditor({
           </main>
         </section>
 
-        <section className="print-only print-card print-sheet rounded-none bg-white p-8 text-black">
-          <div className="rounded-[1.75rem] border border-black/20 p-6">
-            <div className="flex items-start gap-5 border-b border-black/15 pb-5">
-              <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[1.5rem] border border-black/10 bg-black/[0.02]">
+        <section className="print-only print-card print-sheet rounded-none bg-white p-6 text-black">
+          <div className="rounded-[1.5rem] border border-black/20 p-5">
+            <div className="flex items-start gap-4 border-b border-black/15 pb-4">
+              <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[1.25rem] border border-black/10 bg-black/[0.02]">
                 {selectedCompanyLogoUrl ? (
                   <Image
                     alt={selectedCompanyName || exportCopy.companyPending}
@@ -1141,15 +1150,15 @@ function ProtectedExpenseEditor({
                 <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-black/45">
                   {exportCopy.companyCaption}
                 </p>
-                <h2 className="mt-2 font-serif text-2xl leading-tight">
+                <h2 className="mt-1.5 line-clamp-2 font-serif text-[1.4rem] leading-tight">
                   {selectedCompanyName || exportCopy.companyPending}
                 </h2>
-                <p className="mt-2 text-sm text-black/65">{exportCopy.formSubtitle}</p>
-                <p className="mt-3 text-lg font-semibold">{exportCopy.formTitle}</p>
+                <p className="mt-1.5 text-[13px] text-black/65">{exportCopy.formSubtitle}</p>
+                <p className="mt-2 text-base font-semibold">{exportCopy.formTitle}</p>
               </div>
             </div>
 
-            <div className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
+            <div className="mt-4 grid gap-3 text-sm grid-cols-2">
               <InfoLine
                 label={exportCopy.date}
                 value={formatExportDate(expenseDate, exportLanguage)}
@@ -1160,34 +1169,39 @@ function ProtectedExpenseEditor({
               />
             </div>
 
-            <div className="mt-4">
-              <InfoLine label={exportCopy.note} value={note || exportCopy.noteFallback} />
+            <div className="mt-3 rounded-[1rem] border border-black/10 px-3 py-2.5">
+              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-black/45">
+                {exportCopy.note}
+              </p>
+              <p className="mt-1.5 line-clamp-2 text-[13px] leading-5">
+                {note || exportCopy.noteFallback}
+              </p>
             </div>
 
             {populatedRows.length === 0 ? (
-              <div className="mt-6 rounded-[1.5rem] border border-dashed border-black/20 px-4 py-5 text-sm text-black/60">
+              <div className="mt-4 rounded-[1.25rem] border border-dashed border-black/20 px-4 py-4 text-sm text-black/60">
                 {exportCopy.noExpenses}
               </div>
             ) : (
-              <div className="mt-6 overflow-hidden rounded-[1.5rem] border border-black/20">
-                <div className="grid grid-cols-[0.8fr_minmax(0,4fr)_1.3fr] gap-4 bg-black px-4 py-3 text-[11px] font-medium uppercase tracking-[0.18em] text-white">
+              <div className="mt-4 overflow-hidden rounded-[1.25rem] border border-black/20">
+                <div className="grid grid-cols-[0.7fr_minmax(0,4fr)_1.25fr] gap-3 bg-black px-3 py-2.5 text-[10px] font-medium uppercase tracking-[0.16em] text-white">
                   <span>{exportCopy.line}</span>
                   <span>{exportCopy.details}</span>
                   <span className="text-right">{exportCopy.amount}</span>
                 </div>
 
                 <div className="divide-y divide-black/10">
-                  {populatedRows.map((row) => (
+                  {printableFormRows.map((row) => (
                     <div
-                      className="grid grid-cols-[0.8fr_minmax(0,4fr)_1.3fr] gap-4 px-4 py-4 text-sm"
+                      className="grid grid-cols-[0.7fr_minmax(0,4fr)_1.25fr] gap-3 px-3 py-3 text-[13px]"
                       key={row.id}
                     >
                       <span>{row.id}</span>
                       <div>
-                        <p className="font-medium">
+                        <p className="font-medium leading-5">
                           {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
                         </p>
-                        <p className="mt-1 text-xs leading-6 text-black/60">
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-black/60">
                           {row.remark || exportCopy.emptyRemark}
                         </p>
                       </div>
@@ -1202,56 +1216,82 @@ function ProtectedExpenseEditor({
               </div>
             )}
 
-            <div className="mt-5 flex items-center justify-end rounded-[1.25rem] bg-black/[0.04] px-4 py-3 text-sm">
+            {overflowRows.length > 0 ? (
+              <div className="mt-3 rounded-[1rem] border border-black/10 bg-black/[0.03] px-3 py-2 text-[11px] leading-5 text-black/70">
+                <span className="font-medium">
+                  {formatOverflowRowsSummary(overflowRows.length, exportLanguage)}
+                </span>
+                <span className="ml-2 font-semibold">
+                  {formatPrintAmount(overflowAmount, exportLanguage)}
+                </span>
+              </div>
+            ) : null}
+
+            <div className="mt-4 flex items-center justify-end rounded-[1rem] bg-black/[0.04] px-3 py-2.5 text-[13px]">
               <span className="font-medium">{exportCopy.total}:</span>
-              <span className="ml-3 text-base font-semibold">
+              <span className="ml-3 text-sm font-semibold">
                 {formatPrintAmount(totalAmount, exportLanguage)}
               </span>
             </div>
 
-            <div className="mt-10 grid gap-6 text-sm md:grid-cols-3">
+            <div className="mt-6 grid grid-cols-3 gap-4 text-[11px]">
               {exportCopy.signatures.map((label) => (
                 <div className="text-center" key={label}>
                   <p className="font-medium">{exportCopy.signatureHint}</p>
-                  <div className="mt-8 border-b border-black/70" />
-                  <p className="mt-3 text-black/75">{label}</p>
+                  <div className="mt-6 border-b border-black/70" />
+                  <p className="mt-2 text-black/75">{label}</p>
                 </div>
               ))}
             </div>
           </div>
         </section>
 
-        {printableReceipts.map((entry) => (
+        {receiptPages.map((pageEntries, pageIndex) => (
           <section
-            className="print-only print-card print-sheet mt-4 rounded-none bg-white p-8 text-black"
-            key={entry.key}
+            className="print-only print-card print-sheet mt-4 rounded-none bg-white p-6 text-black"
+            key={`receipt-page-${pageIndex + 1}`}
             style={{ breakBefore: "page" }}
           >
-            <div className="rounded-[1.75rem] border border-black/20 p-6">
+            <div className="rounded-[1.5rem] border border-black/20 p-5">
               <div className="border-b border-black/15 pb-4">
                 <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-black/45">
-                  {entry.label}
+                  {exportCopy.receiptsSheetTitle}
                 </p>
-                <p className="mt-2 text-lg font-semibold">
-                  {formatExportExpenseTypeLabel(entry.row.typeId, exportLanguage)}
-                </p>
-                <p className="mt-1 text-sm text-black/65">
-                  {entry.row.remark || exportCopy.emptyRemark}
+                <p className="mt-2 text-sm text-black/65">
+                  {formatReceiptPageCounter(pageIndex + 1, receiptPages.length, exportLanguage)}
                 </p>
               </div>
 
-              <div className="mt-6 flex min-h-[28rem] items-center justify-center overflow-hidden rounded-[1.5rem] border border-black/10 bg-black/[0.02] p-4">
-                <Image
-                  alt={entry.label}
-                  className="h-auto max-h-[52rem] w-full object-contain"
-                  height={1400}
-                  src={entry.receipt.previewUrl}
-                  unoptimized
-                  width={1000}
-                />
-              </div>
+              <div className="mt-4 grid grid-cols-2 gap-4">
+                {pageEntries.map((entry) => (
+                  <article
+                    className="rounded-[1.25rem] border border-black/10 bg-black/[0.01] p-3"
+                    key={entry.key}
+                  >
+                    <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-black/50">
+                      {entry.label}
+                    </p>
+                    <p className="mt-1 line-clamp-1 text-xs text-black/65">
+                      {formatExportExpenseTypeLabel(entry.row.typeId, exportLanguage)}
+                    </p>
 
-              <p className="mt-4 text-sm text-black/55">{entry.receipt.name}</p>
+                    <div className="mt-3 flex h-56 items-center justify-center overflow-hidden rounded-[1rem] border border-black/10 bg-black/[0.02] p-3">
+                      <Image
+                        alt={entry.label}
+                        className="h-full w-full object-contain"
+                        height={900}
+                        src={entry.receipt.previewUrl}
+                        unoptimized
+                        width={900}
+                      />
+                    </div>
+
+                    <p className="mt-2 line-clamp-1 text-[11px] text-black/55">
+                      {entry.receipt.name}
+                    </p>
+                  </article>
+                ))}
+              </div>
             </div>
           </section>
         ))}
@@ -1290,6 +1330,40 @@ function formatPrintAmount(amount: number, language: ExportLanguage) {
   return language === "th" ? `${formattedNumber} บาท` : `${formattedNumber} THB`;
 }
 
+function formatOverflowRowsSummary(count: number, language: ExportLanguage) {
+  if (language === "th") {
+    return `รวมอีก ${count} รายการในยอดรวมด้านล่าง`;
+  }
+
+  return `${count} more expense ${count === 1 ? "line is" : "lines are"} included in the total below`;
+}
+
+function formatReceiptPageCounter(
+  currentPage: number,
+  totalPages: number,
+  language: ExportLanguage,
+) {
+  if (language === "th") {
+    return `หน้า ${currentPage} จาก ${totalPages}`;
+  }
+
+  return `Page ${currentPage} of ${totalPages}`;
+}
+
+function chunkEntries<T>(entries: T[], size: number) {
+  if (entries.length === 0) {
+    return [] as T[][];
+  }
+
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < entries.length; index += size) {
+    chunks.push(entries.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
 function EditorMetric({
   label,
   value,
@@ -1318,11 +1392,11 @@ function InfoLine({
   value: string;
 }) {
   return (
-    <div className="rounded-[1.25rem] border border-black/10 px-4 py-3">
+    <div className="rounded-[1rem] border border-black/10 px-3 py-2.5">
       <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-black/45">
         {label}
       </p>
-      <p className="mt-2 text-sm">{value}</p>
+      <p className="mt-1.5 line-clamp-2 text-[13px] leading-5">{value}</p>
     </div>
   );
 }
