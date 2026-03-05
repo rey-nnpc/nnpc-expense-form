@@ -74,7 +74,7 @@ import {
 } from "../lib/report-data";
 
 const EMPTY_COMPANY_VALUE = "__none__";
-const PRIMARY_EXPORT_ROW_LIMIT = 4;
+const PRIMARY_EXPORT_ROW_LIMIT = 6;
 const RECEIPTS_PER_PAGE = 4;
 
 const EXPORT_COPY: Record<
@@ -647,7 +647,7 @@ function ProtectedExpenseEditor({
                     <p className="text-xs font-medium uppercase tracking-[0.3em] text-muted-foreground">
                       Single-day reimbursement sheet
                     </p>
-                    <CardTitle className="font-serif text-4xl tracking-[-0.03em] sm:text-5xl">
+                    <CardTitle className="font-serif text-3xl tracking-[-0.03em] sm:text-5xl">
                       {formatDisplayDate(expenseDate)}
                     </CardTitle>
                     <CardDescription className="max-w-3xl text-sm leading-7 sm:text-base">
@@ -685,7 +685,7 @@ function ProtectedExpenseEditor({
               </div>
 
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="grid gap-3 md:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                   <EditorMetric
                     label="Employee"
                     value={employeeName || deriveDisplayName(session.userEmail)}
@@ -760,11 +760,11 @@ function ProtectedExpenseEditor({
                   <div className="space-y-4">
                     {rows.map((row) => (
                       <article
-                        className="rounded-3xl border border-white/10 bg-background/65 p-4 sm:p-5"
-                        key={row.id}
-                      >
+                      className="rounded-3xl border border-white/10 bg-background/65 p-4"
+                      key={row.id}
+                    >
                         <button
-                          className="flex w-full flex-col gap-4 text-left sm:flex-row sm:items-start sm:justify-between"
+                          className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-start sm:justify-between"
                           type="button"
                           onClick={() => toggleExpanded(row.id)}
                         >
@@ -784,7 +784,7 @@ function ProtectedExpenseEditor({
                               ) : null}
                             </div>
 
-                            <p className="mt-4 text-sm leading-7 text-foreground sm:text-base">
+                            <p className="mt-3 text-sm leading-6 text-foreground sm:text-base">
                               {buildRemarkSummary(row.remark)}
                             </p>
                           </div>
@@ -806,7 +806,7 @@ function ProtectedExpenseEditor({
                         </button>
 
                         {row.isExpanded ? (
-                          <div className="mt-5 space-y-5 border-t border-border/60 pt-5">
+                          <div className="mt-4 space-y-4 border-t border-border/60 pt-4">
                             <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_11rem]">
                               <label className="block space-y-2">
                                 <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
@@ -854,7 +854,7 @@ function ProtectedExpenseEditor({
                                 Remark
                               </span>
                               <Textarea
-                                className="min-h-28 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                                className="min-h-24 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
                                 placeholder="Where, why, who, route, or meeting context"
                                 value={row.remark}
                                 onChange={(event) =>
@@ -928,7 +928,7 @@ function ProtectedExpenseEditor({
                   <Badge className="rounded-full px-3 py-1" variant="secondary">
                     Export profile
                   </Badge>
-                  <CardTitle className="font-serif text-3xl tracking-tight">
+                  <CardTitle className="font-serif text-2xl tracking-tight sm:text-3xl">
                     Company + print setup
                   </CardTitle>
                   <CardDescription className="text-sm leading-7">
@@ -1052,7 +1052,7 @@ function ProtectedExpenseEditor({
                   <Badge className="rounded-full px-3 py-1" variant="secondary">
                     Summary
                   </Badge>
-                  <CardTitle className="font-serif text-3xl tracking-tight">
+                  <CardTitle className="font-serif text-2xl tracking-tight sm:text-3xl">
                     {formatCurrency(totalAmount)}
                   </CardTitle>
                   <CardDescription className="text-sm leading-7">
@@ -1126,10 +1126,10 @@ function ProtectedExpenseEditor({
           </main>
         </section>
 
-        <section className="print-only print-card print-sheet rounded-none bg-white p-6 text-black">
-          <div className="rounded-[1.5rem] border border-black/20 p-5">
-            <div className="flex items-start gap-4 border-b border-black/15 pb-4">
-              <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[1.25rem] border border-black/10 bg-black/[0.02]">
+        <section className="print-only print-card print-sheet rounded-none bg-white p-3 text-black">
+          <div className="p-0">
+            <div className="flex items-start gap-3 border-b border-black/25 pb-3">
+              <div className="flex h-[4.5rem] w-[4.5rem] shrink-0 items-center justify-center overflow-hidden rounded-[0.85rem]">
                 {selectedCompanyLogoUrl ? (
                   <Image
                     alt={selectedCompanyName || exportCopy.companyPending}
@@ -1147,18 +1147,18 @@ function ProtectedExpenseEditor({
               </div>
 
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-black/45">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
                   {exportCopy.companyCaption}
                 </p>
-                <h2 className="mt-1.5 line-clamp-2 font-serif text-[1.4rem] leading-tight">
+                <h2 className="mt-1 line-clamp-2 font-serif text-[1.22rem] leading-tight">
                   {selectedCompanyName || exportCopy.companyPending}
                 </h2>
-                <p className="mt-1.5 text-[13px] text-black/65">{exportCopy.formSubtitle}</p>
-                <p className="mt-2 text-base font-semibold">{exportCopy.formTitle}</p>
+                <p className="mt-1 text-[12px] text-black/65">{exportCopy.formSubtitle}</p>
+                <p className="mt-1.5 text-[14px] font-semibold">{exportCopy.formTitle}</p>
               </div>
             </div>
 
-            <div className="mt-4 grid gap-3 text-sm grid-cols-2">
+            <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
               <InfoLine
                 label={exportCopy.date}
                 value={formatExportDate(expenseDate, exportLanguage)}
@@ -1169,39 +1169,39 @@ function ProtectedExpenseEditor({
               />
             </div>
 
-            <div className="mt-3 rounded-[1rem] border border-black/10 px-3 py-2.5">
-              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-black/45">
+            <div className="mt-2.5 border-b border-black/15 pb-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-black/55">
                 {exportCopy.note}
               </p>
-              <p className="mt-1.5 line-clamp-2 text-[13px] leading-5">
+              <p className="mt-1 line-clamp-2 text-[12px] leading-5">
                 {note || exportCopy.noteFallback}
               </p>
             </div>
 
             {populatedRows.length === 0 ? (
-              <div className="mt-4 rounded-[1.25rem] border border-dashed border-black/20 px-4 py-4 text-sm text-black/60">
+              <div className="mt-3 px-1 py-2 text-sm text-black/60">
                 {exportCopy.noExpenses}
               </div>
             ) : (
-              <div className="mt-4 overflow-hidden rounded-[1.25rem] border border-black/20">
-                <div className="grid grid-cols-[0.7fr_minmax(0,4fr)_1.25fr] gap-3 bg-black px-3 py-2.5 text-[10px] font-medium uppercase tracking-[0.16em] text-white">
+              <div className="mt-3 overflow-hidden border border-black/30">
+                <div className="grid grid-cols-[0.65fr_minmax(0,4.2fr)_1.2fr] gap-2 border-b border-black/30 px-2 py-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-black/80">
                   <span>{exportCopy.line}</span>
                   <span>{exportCopy.details}</span>
                   <span className="text-right">{exportCopy.amount}</span>
                 </div>
 
-                <div className="divide-y divide-black/10">
+                <div className="divide-y divide-black/20">
                   {printableFormRows.map((row) => (
                     <div
-                      className="grid grid-cols-[0.7fr_minmax(0,4fr)_1.25fr] gap-3 px-3 py-3 text-[13px]"
+                      className="grid grid-cols-[0.65fr_minmax(0,4.2fr)_1.2fr] gap-2 px-2 py-2 text-[12px]"
                       key={row.id}
                     >
                       <span>{row.id}</span>
                       <div>
-                        <p className="font-medium leading-5">
+                        <p className="font-medium leading-[1.125rem]">
                           {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
                         </p>
-                        <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-black/60">
+                        <p className="mt-0.5 line-clamp-1 text-[10px] leading-4 text-black/65">
                           {row.remark || exportCopy.emptyRemark}
                         </p>
                       </div>
@@ -1217,7 +1217,7 @@ function ProtectedExpenseEditor({
             )}
 
             {overflowRows.length > 0 ? (
-              <div className="mt-3 rounded-[1rem] border border-black/10 bg-black/[0.03] px-3 py-2 text-[11px] leading-5 text-black/70">
+              <div className="mt-2 px-0.5 text-[10px] leading-[1.125rem] text-black/75">
                 <span className="font-medium">
                   {formatOverflowRowsSummary(overflowRows.length, exportLanguage)}
                 </span>
@@ -1227,19 +1227,19 @@ function ProtectedExpenseEditor({
               </div>
             ) : null}
 
-            <div className="mt-4 flex items-center justify-end rounded-[1rem] bg-black/[0.04] px-3 py-2.5 text-[13px]">
+            <div className="mt-2.5 flex items-center justify-end border-t border-black/25 px-0.5 py-2 text-[12px]">
               <span className="font-medium">{exportCopy.total}:</span>
               <span className="ml-3 text-sm font-semibold">
                 {formatPrintAmount(totalAmount, exportLanguage)}
               </span>
             </div>
 
-            <div className="mt-6 grid grid-cols-3 gap-4 text-[11px]">
+            <div className="mt-5 grid grid-cols-3 gap-3 text-[10px]">
               {exportCopy.signatures.map((label) => (
                 <div className="text-center" key={label}>
-                  <p className="font-medium">{exportCopy.signatureHint}</p>
-                  <div className="mt-6 border-b border-black/70" />
-                  <p className="mt-2 text-black/75">{label}</p>
+                  <p className="font-semibold tracking-[0.02em]">{exportCopy.signatureHint}</p>
+                  <div className="mt-7 border-b border-black/75" />
+                  <p className="mt-2 text-black/80">{label}</p>
                 </div>
               ))}
             </div>
@@ -1248,34 +1248,31 @@ function ProtectedExpenseEditor({
 
         {receiptPages.map((pageEntries, pageIndex) => (
           <section
-            className="print-only print-card print-sheet mt-4 rounded-none bg-white p-6 text-black"
+            className="print-only print-card print-sheet mt-3 rounded-none bg-white p-3 text-black"
             key={`receipt-page-${pageIndex + 1}`}
             style={{ breakBefore: "page" }}
           >
-            <div className="rounded-[1.5rem] border border-black/20 p-5">
-              <div className="border-b border-black/15 pb-4">
-                <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-black/45">
+            <div className="p-0">
+              <div className="border-b border-black/25 pb-2">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
                   {exportCopy.receiptsSheetTitle}
                 </p>
-                <p className="mt-2 text-sm text-black/65">
+                <p className="mt-1.5 text-[12px] text-black/65">
                   {formatReceiptPageCounter(pageIndex + 1, receiptPages.length, exportLanguage)}
                 </p>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-4">
+              <div className="mt-3 grid grid-cols-2 gap-3">
                 {pageEntries.map((entry) => (
-                  <article
-                    className="rounded-[1.25rem] border border-black/10 bg-black/[0.01] p-3"
-                    key={entry.key}
-                  >
-                    <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-black/50">
+                  <article className="p-0" key={entry.key}>
+                    <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-black/55">
                       {entry.label}
                     </p>
-                    <p className="mt-1 line-clamp-1 text-xs text-black/65">
+                    <p className="mt-1 line-clamp-1 text-[11px] text-black/65">
                       {formatExportExpenseTypeLabel(entry.row.typeId, exportLanguage)}
                     </p>
 
-                    <div className="mt-3 flex h-56 items-center justify-center overflow-hidden rounded-[1rem] border border-black/10 bg-black/[0.02] p-3">
+                    <div className="mt-2 flex h-48 items-center justify-center overflow-hidden border border-black/25 p-2">
                       <Image
                         alt={entry.label}
                         className="h-full w-full object-contain"
@@ -1286,7 +1283,7 @@ function ProtectedExpenseEditor({
                       />
                     </div>
 
-                    <p className="mt-2 line-clamp-1 text-[11px] text-black/55">
+                    <p className="mt-1.5 line-clamp-1 text-[10px] text-black/60">
                       {entry.receipt.name}
                     </p>
                   </article>
@@ -1392,11 +1389,13 @@ function InfoLine({
   value: string;
 }) {
   return (
-    <div className="rounded-[1rem] border border-black/10 px-3 py-2.5">
+    <div className="px-0.5 py-0.5">
       <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-black/45">
         {label}
       </p>
-      <p className="mt-1.5 line-clamp-2 text-[13px] leading-5">{value}</p>
+      <p className="mt-1 line-clamp-2 border-b border-black/15 pb-1 text-[13px] leading-5">
+        {value}
+      </p>
     </div>
   );
 }
