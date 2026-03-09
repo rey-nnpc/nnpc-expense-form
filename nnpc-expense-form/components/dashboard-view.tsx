@@ -10,40 +10,32 @@ import { TopRouteTabs } from "@/components/top-route-tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { readExpenseSummariesCache, writeExpenseSummariesCache } from "@/lib/browser-cache";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/company-data";
-import { formatDisplayDate } from "@/lib/date";
+import { formatDisplayDate, getBangkokDateInputValue } from "@/lib/date";
 import { formatCurrency, type ExpenseSummary } from "@/lib/expense-data";
 import { listExpenseSummaries } from "@/lib/report-data";
 
-export default function DashboardView({
-  defaultExpenseDate,
-}: {
-  defaultExpenseDate: string;
-}) {
+export default function DashboardView() {
   return (
     <AuthGate>
       {({ session, logout }) => (
-        <ProtectedDashboard
-          defaultExpenseDate={defaultExpenseDate}
-          logout={logout}
-          session={session}
-        />
+        <ProtectedDashboard logout={logout} session={session} />
       )}
     </AuthGate>
   );
 }
 
 function ProtectedDashboard({
-  defaultExpenseDate,
   logout,
   session,
 }: {
-  defaultExpenseDate: string;
   logout: () => Promise<void>;
   session: AuthSession;
 }) {
   const router = useRouter();
-  const [selectedDate, setSelectedDate] = useState(defaultExpenseDate);
+  const cacheUserKey = session.userEmail;
+  const [selectedDate, setSelectedDate] = useState(() => getBangkokDateInputValue());
   const [summaries, setSummaries] = useState<ExpenseSummary[]>([]);
   const [isLoadingSummaries, setIsLoadingSummaries] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -52,16 +44,31 @@ function ProtectedDashboard({
 
   useEffect(() => {
     let isActive = true;
+    const loadSummaries = async () => {
+      const cachedSummaries = readExpenseSummariesCache(cacheUserKey);
 
-    void listExpenseSummaries(session.accessToken)
-      .then((nextSummaries) => {
+      if (cachedSummaries) {
         if (!isActive) {
           return;
         }
 
-        setSummaries(nextSummaries);
+        setSummaries(cachedSummaries);
         setSummaryError(null);
-      })
+        return;
+      }
+
+      const nextSummaries = await listExpenseSummaries(session.accessToken);
+
+      if (!isActive) {
+        return;
+      }
+
+      setSummaries(nextSummaries);
+      setSummaryError(null);
+      writeExpenseSummariesCache(cacheUserKey, nextSummaries);
+    };
+
+    void loadSummaries()
       .catch((error: unknown) => {
         if (!isActive) {
           return;
@@ -87,7 +94,7 @@ function ProtectedDashboard({
     return () => {
       isActive = false;
     };
-  }, [logout, session.accessToken]);
+  }, [cacheUserKey, logout, session.accessToken]);
 
   return (
     <div className="page-shell min-h-screen">
@@ -134,7 +141,9 @@ function ProtectedDashboard({
               <Button
                 className="h-11 rounded-2xl px-5"
                 type="button"
-                onClick={() => router.push(`/expense/${selectedDate}`)}
+                onClick={() =>
+                  router.push(`/expense?date=${encodeURIComponent(selectedDate)}`)
+                }
               >
                 {matchingSummary ? "Open" : "Create"}
               </Button>
@@ -166,7 +175,7 @@ function ProtectedDashboard({
                 {summaries.map((summary) => (
                   <Link
                     className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border/50 px-4 py-4 text-sm transition last:border-b-0 hover:bg-accent/40 sm:px-5"
-                    href={`/expense/${summary.date}`}
+                    href={`/expense?date=${encodeURIComponent(summary.date)}`}
                     key={summary.date}
                   >
                     <span className="min-w-0 truncate font-medium text-foreground">
