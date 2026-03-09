@@ -63,6 +63,13 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { TopRouteTabs } from "@/components/top-route-tabs";
+import {
+  readCompaniesCache,
+  readExpenseDayCache,
+  upsertExpenseSummaryCache,
+  writeCompaniesCache,
+  writeExpenseDayCache,
+} from "@/lib/browser-cache";
 import AuthGate, { type AuthSession } from "./auth-gate";
 import {
   SESSION_EXPIRED_MESSAGE,
@@ -86,9 +93,11 @@ import {
 } from "../lib/expense-data";
 import {
   buildRowsFromLoadedReport,
+  type ExpenseDayDocument,
   getExpenseDay,
   upsertExpenseDay,
 } from "../lib/report-data";
+import { buildPublicStorageUrl } from "../lib/supabase-api";
 
 const EMPTY_COMPANY_VALUE = "__none__";
 const PRIMARY_EXPORT_ROW_LIMIT = 6;
@@ -340,6 +349,7 @@ function ProtectedExpenseEditor({
   session: AuthSession;
 }) {
   const defaultEmployeeName = deriveDisplayName(session.userEmail);
+  const cacheUserKey = session.userEmail;
   const [employeeName, setEmployeeName] = useState(defaultEmployeeName);
   const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [loadedCompanyId, setLoadedCompanyId] = useState("");
@@ -375,48 +385,69 @@ function ProtectedExpenseEditor({
   const skipNextAutosaveRef = useRef(true);
   const hasLoadedDocumentRef = useRef(false);
 
+  const applyLoadedDocument = useEffectEvent((
+    existingReport: ExpenseDayDocument | null,
+    nextCompanies: CompanyRecord[],
+  ) => {
+    setCompanies(nextCompanies);
+    setDocumentError(null);
+
+    if (!existingReport) {
+      setEmployeeName(defaultEmployeeName);
+      setSelectedCompanyId("");
+      setLoadedCompanyId("");
+      setLoadedCompanyName("");
+      setLoadedCompanyLogoBucketName("");
+      setLoadedCompanyLogoObjectPath("");
+      setLoadedCompanyLogoUrl("");
+      setExportLanguage("en");
+      setNote("");
+      setRows([]);
+    } else {
+      setEmployeeName(existingReport.employeeName || defaultEmployeeName);
+      setSelectedCompanyId(existingReport.companyId);
+      setLoadedCompanyId(existingReport.companyId);
+      setLoadedCompanyName(existingReport.companyName);
+      setLoadedCompanyLogoBucketName(existingReport.companyLogoBucketName);
+      setLoadedCompanyLogoObjectPath(existingReport.companyLogoObjectPath);
+      setLoadedCompanyLogoUrl(existingReport.companyLogoUrl);
+      setExportLanguage(existingReport.exportLanguage);
+      setNote(existingReport.note);
+      setRows(buildRowsFromLoadedReport(existingReport.rows));
+    }
+
+    skipNextAutosaveRef.current = true;
+    hasLoadedDocumentRef.current = true;
+  });
+
   useEffect(() => {
     let isActive = true;
 
     const loadDocument = async () => {
+      const cachedCompanies = readCompaniesCache(cacheUserKey);
+      const cachedExpenseDay = readExpenseDayCache(cacheUserKey, expenseDate);
       const [nextCompanies, existingReport] = await Promise.all([
-        listUserCompanies(session.accessToken),
-        getExpenseDay(session.accessToken, expenseDate),
+        cachedCompanies
+          ? Promise.resolve(cachedCompanies)
+          : listUserCompanies(session.accessToken),
+        cachedExpenseDay
+          ? Promise.resolve(cachedExpenseDay)
+          : getExpenseDay(session.accessToken, expenseDate),
       ]);
 
       if (!isActive) {
         return;
       }
 
-      setCompanies(nextCompanies);
-      setDocumentError(null);
-
-      if (!existingReport) {
-        setEmployeeName(defaultEmployeeName);
-        setSelectedCompanyId("");
-        setLoadedCompanyId("");
-        setLoadedCompanyName("");
-        setLoadedCompanyLogoBucketName("");
-        setLoadedCompanyLogoObjectPath("");
-        setLoadedCompanyLogoUrl("");
-        setExportLanguage("en");
-        setNote("");
-        setRows([]);
-      } else {
-        setEmployeeName(existingReport.employeeName || defaultEmployeeName);
-        setSelectedCompanyId(existingReport.companyId);
-        setLoadedCompanyId(existingReport.companyId);
-        setLoadedCompanyName(existingReport.companyName);
-        setLoadedCompanyLogoBucketName(existingReport.companyLogoBucketName);
-        setLoadedCompanyLogoObjectPath(existingReport.companyLogoObjectPath);
-        setLoadedCompanyLogoUrl(existingReport.companyLogoUrl);
-        setExportLanguage(existingReport.exportLanguage);
-        setNote(existingReport.note);
-        setRows(buildRowsFromLoadedReport(existingReport.rows));
+      if (!cachedCompanies) {
+        writeCompaniesCache(cacheUserKey, nextCompanies);
       }
 
-      skipNextAutosaveRef.current = true;
-      hasLoadedDocumentRef.current = true;
+      if (existingReport && !cachedExpenseDay) {
+        writeExpenseDayCache(cacheUserKey, expenseDate, existingReport);
+      }
+
+      applyLoadedDocument(existingReport, nextCompanies);
     };
 
     void loadDocument()
@@ -443,7 +474,7 @@ function ProtectedExpenseEditor({
     return () => {
       isActive = false;
     };
-  }, [defaultEmployeeName, expenseDate, logout, session.accessToken]);
+  }, [cacheUserKey, defaultEmployeeName, expenseDate, logout, session.accessToken]);
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
   const selectedCompanyName =
@@ -499,6 +530,38 @@ function ProtectedExpenseEditor({
           timeStyle: "short",
         }).format(new Date()),
       );
+
+      const persistedRows = saveResult.rows
+        .filter(hasRowContent)
+        .map((row) => ({
+          ...row,
+          isExpanded: false,
+          isReceiptPreviewOpen: false,
+        }));
+      const cachedCompanyLogoUrl =
+        nextSnapshot.companyLogoBucketName && nextSnapshot.companyLogoObjectPath
+          ? buildPublicStorageUrl(
+              nextSnapshot.companyLogoBucketName,
+              nextSnapshot.companyLogoObjectPath,
+            )
+          : "";
+
+      writeExpenseDayCache(cacheUserKey, expenseDate, {
+        companyId: nextSnapshot.companyId,
+        companyLogoBucketName: nextSnapshot.companyLogoBucketName,
+        companyLogoObjectPath: nextSnapshot.companyLogoObjectPath,
+        companyLogoUrl: cachedCompanyLogoUrl,
+        companyName: nextSnapshot.companyName,
+        employeeName: nextSnapshot.employeeName,
+        exportLanguage: nextSnapshot.exportLanguage,
+        note: nextSnapshot.note,
+        reportId: "",
+        rows: persistedRows,
+      });
+      upsertExpenseSummaryCache(cacheUserKey, {
+        date: expenseDate,
+        totalAmount: persistedRows.reduce((sum, row) => sum + parseAmount(row.amount), 0),
+      });
 
       if (saveResult.didUpload) {
         skipNextAutosaveRef.current = true;

@@ -15,6 +15,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { readCompaniesCache, writeCompaniesCache } from "@/lib/browser-cache";
 import {
   SESSION_EXPIRED_MESSAGE,
   createUserCompany,
@@ -65,6 +66,7 @@ function ProtectedCompanySettings({
   logout: () => Promise<void>;
   session: AuthSession;
 }) {
+  const cacheUserKey = session.userEmail;
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [companyNameDraft, setCompanyNameDraft] = useState("");
   const [companyLogoFile, setCompanyLogoFile] = useState<File | null>(null);
@@ -75,16 +77,31 @@ function ProtectedCompanySettings({
 
   useEffect(() => {
     let isActive = true;
+    const loadCompanies = async () => {
+      const cachedCompanies = readCompaniesCache(cacheUserKey);
 
-    void listUserCompanies(session.accessToken)
-      .then((nextCompanies) => {
+      if (cachedCompanies) {
         if (!isActive) {
           return;
         }
 
-        setCompanies(nextCompanies);
+        setCompanies(cachedCompanies);
         setCompanyMessage(null);
-      })
+        return;
+      }
+
+      const nextCompanies = await listUserCompanies(session.accessToken);
+
+      if (!isActive) {
+        return;
+      }
+
+      setCompanies(nextCompanies);
+      setCompanyMessage(null);
+      writeCompaniesCache(cacheUserKey, nextCompanies);
+    };
+
+    void loadCompanies()
       .catch((error: unknown) => {
         if (!isActive) {
           return;
@@ -112,7 +129,7 @@ function ProtectedCompanySettings({
     return () => {
       isActive = false;
     };
-  }, [logout, session.accessToken]);
+  }, [cacheUserKey, logout, session.accessToken]);
 
   const handleCompanyLogoChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const [file] = Array.from(event.target.files ?? []);
@@ -163,7 +180,11 @@ function ProtectedCompanySettings({
         logoFile: companyLogoFile,
       });
 
-      setCompanies((currentCompanies) => [savedCompany, ...currentCompanies]);
+      setCompanies((currentCompanies) => {
+        const nextCompanies = [savedCompany, ...currentCompanies];
+        writeCompaniesCache(cacheUserKey, nextCompanies);
+        return nextCompanies;
+      });
       setCompanyNameDraft("");
       setCompanyLogoFile(null);
       setCompanyLogoDraft("");
