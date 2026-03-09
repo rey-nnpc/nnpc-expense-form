@@ -73,7 +73,7 @@ function buildReceiptDraftFromRow(row: ReceiptRow): ReceiptDraft {
     sizeLabel:
       typeof row.file_size_bytes === "number"
         ? formatFileSize(row.file_size_bytes)
-        : "Stored in Supabase",
+        : "Saved receipt",
     bucketName: row.bucket_name,
     objectPath: row.object_path,
     mimeType: row.mime_type,

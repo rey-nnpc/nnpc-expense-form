@@ -11,20 +11,26 @@ import {
 } from "react";
 import Link from "next/link";
 import {
+  CircleAlert,
   Building2,
   CalendarDays,
   ChevronDown,
   ChevronUp,
+  CloudCheck,
+  CloudUpload,
   FileText,
   Globe2,
   ImagePlus,
+  LoaderCircle,
   LogOut,
   NotebookPen,
   Plus,
   Printer,
   Receipt,
+  Sparkles,
   Trash2,
   UserRound,
+  X,
 } from "lucide-react";
 import { ThemeSettingsSheet } from "@/components/theme-settings-sheet";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +42,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -44,6 +60,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { TopRouteTabs } from "@/components/top-route-tabs";
 import AuthGate, { type AuthSession } from "./auth-gate";
@@ -76,6 +93,7 @@ import {
 const EMPTY_COMPANY_VALUE = "__none__";
 const PRIMARY_EXPORT_ROW_LIMIT = 6;
 const RECEIPTS_PER_PAGE = 4;
+const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
 
 const EXPORT_COPY: Record<
   ExportLanguage,
@@ -153,6 +171,20 @@ const THAI_EXPENSE_TYPE_LABELS: Record<string, string> = {
   misc: "ค่าใช้จ่ายอื่น ๆ",
 };
 
+type PendingRemoval =
+  | {
+      kind: "receipt";
+      receiptId: string;
+      receiptName: string;
+      rowId: number;
+      rowNumber: number;
+    }
+  | {
+      kind: "row";
+      rowId: number;
+      rowNumber: number;
+    };
+
 export default function ExpenseEditorView({
   expenseDate,
 }: {
@@ -176,7 +208,10 @@ async function toReceiptDrafts(rowId: number, files: FileList | null) {
 
   return Promise.all(
     fileEntries.map(async (file, index) => ({
-      id: `${rowId}-${index}-${file.name}`,
+      id:
+        typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${rowId}-${Date.now()}-${index}-${file.name}`,
       file,
       fileSizeBytes: file.size,
       mimeType: file.type || null,
@@ -197,14 +232,98 @@ function readFileAsDataUrl(file: File) {
         return;
       }
 
-      reject(new Error("File preview failed."));
+      reject(new Error("This photo could not be prepared."));
     };
 
     reader.onerror = () => {
-      reject(reader.error ?? new Error("File preview failed."));
+      reject(reader.error ?? new Error("This photo could not be prepared."));
     };
 
     reader.readAsDataURL(file);
+  });
+}
+
+function getFriendlyEditorError(
+  error: unknown,
+  action: "load" | "save" | "receipt" | "print",
+) {
+  const message = error instanceof Error ? error.message : "";
+
+  if (/session expired/i.test(message)) {
+    return "Your session ended. Please sign in again.";
+  }
+
+  if (/Missing Supabase URL|publishable key/i.test(message)) {
+    return "This page is not fully set up yet. Please ask the app owner to finish the setup.";
+  }
+
+  if (/Failed to fetch|NetworkError|network request|Load failed|fetch/i.test(message)) {
+    if (action === "load") {
+      return "We couldn't open this expense page right now. Please check your internet connection and try again.";
+    }
+
+    if (action === "print") {
+      return "We couldn't prepare the receipt photos for printing. Please try again in a moment.";
+    }
+
+    return "We couldn't save your latest changes right now. Please check your internet connection and try again.";
+  }
+
+  if (/permission|forbidden|unauthorized|row-level security/i.test(message)) {
+    return "You don't have access to do that right now. Please sign in again and try once more.";
+  }
+
+  if (action === "receipt") {
+    return "One of the receipt photos could not be added. Please try a different image.";
+  }
+
+  if (action === "load") {
+    return "We couldn't open this expense page right now. Please try again.";
+  }
+
+  if (action === "print") {
+    return "We couldn't get the receipt photos ready for export. Please try again.";
+  }
+
+  return "We couldn't save your latest changes. Please try again.";
+}
+
+function preloadImageUrl(url: string) {
+  return new Promise<boolean>((resolve) => {
+    const image = new window.Image();
+    const timeoutId = window.setTimeout(() => resolve(false), IMAGE_PRELOAD_TIMEOUT_MS);
+
+    const finish = (didLoad: boolean) => {
+      window.clearTimeout(timeoutId);
+      resolve(didLoad);
+    };
+
+    image.onload = () => finish(true);
+    image.onerror = () => finish(false);
+    image.decoding = "async";
+    image.src = url;
+
+    if (image.complete) {
+      finish(image.naturalWidth > 0);
+    }
+  });
+}
+
+async function preloadPrintableAssets(urls: string[]) {
+  const uniqueUrls = Array.from(new Set(urls.filter(Boolean)));
+
+  if (uniqueUrls.length === 0) {
+    return true;
+  }
+
+  const results = await Promise.all(uniqueUrls.map((url) => preloadImageUrl(url)));
+
+  return results.every(Boolean);
+}
+
+function waitForNextFrame() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
   });
 }
 
@@ -235,6 +354,9 @@ function ProtectedExpenseEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [lastPrintedAt, setLastPrintedAt] = useState<string | null>(null);
+  const [isPreparingPrint, setIsPreparingPrint] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
   const pendingSaveRef = useRef<{
     companyId: string;
     companyLogoBucketName: string;
@@ -306,9 +428,7 @@ function ProtectedExpenseEditor({
         }
 
         setDocumentError(
-          error instanceof Error
-            ? error.message
-            : "This expense day could not be loaded from Supabase.",
+          getFriendlyEditorError(error, "load"),
         );
       })
       .finally(() => {
@@ -388,7 +508,7 @@ function ProtectedExpenseEditor({
       }
 
       setSaveError(
-        error instanceof Error ? error.message : "This expense day could not be saved.",
+        getFriendlyEditorError(error, "save"),
       );
     } finally {
       isPersistingRef.current = false;
@@ -446,30 +566,75 @@ function ProtectedExpenseEditor({
     selectedCompanyName,
   ]);
 
+  const rowNumberById = new Map(rows.map((row, index) => [row.id, index + 1]));
   const populatedRows = rows.filter(hasRowContent);
+  const populatedRowsWithLineNumbers = populatedRows.map((row, index) => ({
+    lineNumber: index + 1,
+    row,
+  }));
   const totalAmount = rows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const totalReceipts = rows.reduce((sum, row) => sum + row.receipts.length, 0);
   const exportCopy = EXPORT_COPY[exportLanguage];
-  const printableFormRows = populatedRows.slice(0, PRIMARY_EXPORT_ROW_LIMIT);
-  const overflowRows = populatedRows.slice(PRIMARY_EXPORT_ROW_LIMIT);
-  const overflowAmount = overflowRows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
-  const printableReceipts = populatedRows.flatMap((row) =>
+  const printableFormRows = populatedRowsWithLineNumbers.slice(0, PRIMARY_EXPORT_ROW_LIMIT);
+  const overflowRows = populatedRowsWithLineNumbers.slice(PRIMARY_EXPORT_ROW_LIMIT);
+  const overflowAmount = overflowRows.reduce(
+    (sum, entry) => sum + parseAmount(entry.row.amount),
+    0,
+  );
+  const printableReceipts = populatedRowsWithLineNumbers.flatMap(({ lineNumber, row }) =>
     row.receipts.map((receipt, receiptIndex) => ({
       key: `${row.id}-${receipt.id}`,
-      label: `${exportCopy.receiptLabel} - ${exportCopy.expenseLabel} ${String(row.id).padStart(2, "0")}${
+      label: `${exportCopy.receiptLabel} - ${exportCopy.expenseLabel} ${String(lineNumber).padStart(2, "0")}${
         row.receipts.length > 1 ? `.${receiptIndex + 1}` : ""
       }`,
+      lineNumber,
       receipt,
       row,
     })),
   );
   const receiptPages = chunkEntries(printableReceipts, RECEIPTS_PER_PAGE);
+  const printableAssetUrls = [
+    selectedCompanyLogoUrl,
+    ...printableReceipts.map((entry) => entry.receipt.previewUrl),
+  ].filter(Boolean);
+  const editorStatus = saveError
+    ? {
+        description: saveError,
+        icon: <CircleAlert className="size-4" />,
+        label: "Needs attention",
+        tone:
+          "border-destructive/18 bg-[linear-gradient(135deg,rgba(239,68,68,0.16),rgba(239,68,68,0.05))] text-destructive",
+      }
+    : isSavingDocument
+      ? {
+          description: "You can keep working while we update this page in the background.",
+          icon: <CloudUpload className="size-4 animate-pulse" />,
+          label: "Saving your latest changes",
+          tone:
+            "border-primary/18 bg-[linear-gradient(135deg,rgba(34,197,94,0.16),rgba(34,197,94,0.05))] text-primary",
+        }
+      : lastSavedAt
+        ? {
+            description: `Last updated ${lastSavedAt}`,
+            icon: <CloudCheck className="size-4" />,
+            label: "All changes saved automatically",
+            tone:
+              "border-primary/15 bg-[linear-gradient(135deg,rgba(34,197,94,0.12),rgba(34,197,94,0.04))] text-primary",
+          }
+        : {
+            description: "Your changes will save automatically while you work.",
+            icon: <Sparkles className="size-4" />,
+            label: "Ready to start",
+            tone:
+              "border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] text-primary",
+          };
 
   const updateRow = <K extends keyof ExpenseRow,>(
     rowId: number,
     key: K,
     value: ExpenseRow[K],
   ) => {
+    setPrintError(null);
     setRows((currentRows) =>
       currentRows.map((row) =>
         row.id === rowId
@@ -483,6 +648,7 @@ function ProtectedExpenseEditor({
   };
 
   const addRow = () => {
+    setPrintError(null);
     startTransition(() => {
       setRows((currentRows) => {
         const nextId =
@@ -496,8 +662,30 @@ function ProtectedExpenseEditor({
   };
 
   const removeRow = (rowId: number) => {
+    setPrintError(null);
     startTransition(() => {
       setRows((currentRows) => currentRows.filter((row) => row.id !== rowId));
+    });
+  };
+
+  const removeReceipt = (rowId: number, receiptId: string) => {
+    setPrintError(null);
+    startTransition(() => {
+      setRows((currentRows) =>
+        currentRows.map((row) => {
+          if (row.id !== rowId) {
+            return row;
+          }
+
+          const nextReceipts = row.receipts.filter((receipt) => receipt.id !== receiptId);
+
+          return {
+            ...row,
+            receipts: nextReceipts,
+            isReceiptPreviewOpen: nextReceipts.length > 0 && row.isReceiptPreviewOpen,
+          };
+        }),
+      );
     });
   };
 
@@ -528,11 +716,18 @@ function ProtectedExpenseEditor({
   };
 
   const handleReceiptChange = async (rowId: number, files: FileList | null) => {
+    if (!files || files.length === 0) {
+      return;
+    }
+
     let nextReceipts: ReceiptDraft[];
 
     try {
       nextReceipts = await toReceiptDrafts(rowId, files);
-    } catch {
+      setSaveError(null);
+      setPrintError(null);
+    } catch (error) {
+      setSaveError(getFriendlyEditorError(error, "receipt"));
       return;
     }
 
@@ -541,8 +736,8 @@ function ProtectedExpenseEditor({
         row.id === rowId
           ? {
               ...row,
-              receipts: nextReceipts,
-              isReceiptPreviewOpen: nextReceipts.length > 0,
+              receipts: [...row.receipts, ...nextReceipts],
+              isReceiptPreviewOpen: true,
             }
           : row,
       ),
@@ -550,6 +745,8 @@ function ProtectedExpenseEditor({
   };
 
   const handleCompanySelect = (value: string) => {
+    setPrintError(null);
+
     if (value === EMPTY_COMPANY_VALUE) {
       setSelectedCompanyId("");
       return;
@@ -558,34 +755,73 @@ function ProtectedExpenseEditor({
     setSelectedCompanyId(value);
   };
 
-  const handlePrint = () => {
+  const requestRowRemoval = (rowId: number) => {
+    setPendingRemoval({
+      kind: "row",
+      rowId,
+      rowNumber: rowNumberById.get(rowId) ?? rowId,
+    });
+  };
+
+  const requestReceiptRemoval = (rowId: number, receipt: ReceiptDraft) => {
+    setPendingRemoval({
+      kind: "receipt",
+      receiptId: receipt.id,
+      receiptName: receipt.name,
+      rowId,
+      rowNumber: rowNumberById.get(rowId) ?? rowId,
+    });
+  };
+
+  const confirmPendingRemoval = () => {
+    if (!pendingRemoval) {
+      return;
+    }
+
+    if (pendingRemoval.kind === "row") {
+      removeRow(pendingRemoval.rowId);
+    } else {
+      removeReceipt(pendingRemoval.rowId, pendingRemoval.receiptId);
+    }
+
+    setPendingRemoval(null);
+  };
+
+  const handlePrint = async () => {
+    if (isPreparingPrint) {
+      return;
+    }
+
+    setPrintError(null);
+    setIsPreparingPrint(true);
+
     const printedAt = new Intl.DateTimeFormat("en-US", {
       dateStyle: "medium",
       timeStyle: "short",
     }).format(new Date());
 
-    setLastPrintedAt(printedAt);
-    window.print();
+    try {
+      const areAssetsReady = await preloadPrintableAssets(printableAssetUrls);
+
+      if (!areAssetsReady) {
+        throw new Error("Printable assets were not ready in time.");
+      }
+
+      await waitForNextFrame();
+      setLastPrintedAt(printedAt);
+      window.print();
+    } catch (error) {
+      setPrintError(getFriendlyEditorError(error, "print"));
+    } finally {
+      setIsPreparingPrint(false);
+    }
   };
 
   if (isLoadingDocument) {
     return (
       <div className="page-shell min-h-screen">
         <div className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 lg:py-8">
-          <Card className="premium-panel rounded-[2rem] border-border/60 py-0">
-            <CardContent className="px-6 py-12 text-center sm:px-10">
-              <Badge className="rounded-full px-3 py-1" variant="secondary">
-                Syncing
-              </Badge>
-              <p className="mt-5 font-serif text-3xl tracking-tight text-foreground">
-                Loading this day from Supabase
-              </p>
-              <p className="mt-3 text-sm leading-7 text-muted-foreground">
-                Pulling the report, receipts, and company headers before the editor
-                opens.
-              </p>
-            </CardContent>
-          </Card>
+          <LoadingExpenseDayState />
         </div>
       </div>
     );
@@ -598,12 +834,17 @@ function ProtectedExpenseEditor({
           <Card className="premium-panel rounded-[2rem] border-border/60 py-0">
             <CardContent className="px-6 py-12 text-center sm:px-10">
               <Badge className="rounded-full px-3 py-1" variant="secondary">
-                Load failed
+                We hit a snag
               </Badge>
+              <div className="mx-auto mt-5 flex size-16 items-center justify-center rounded-full border border-destructive/20 bg-destructive/8 text-destructive">
+                <CircleAlert className="size-7" />
+              </div>
               <p className="mt-5 font-serif text-3xl tracking-tight text-foreground">
-                The editor could not reach Supabase
+                This expense page could not be opened
               </p>
-              <p className="mt-3 text-sm leading-7 text-destructive">{documentError}</p>
+              <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-muted-foreground">
+                {documentError}
+              </p>
               <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
                 <Button asChild className="rounded-full px-5" variant="outline">
                   <Link href="/dashboard">Back to dashboard</Link>
@@ -636,7 +877,7 @@ function ProtectedExpenseEditor({
                       className="rounded-full border-white/10 bg-white/5 px-4 py-1 text-[0.7rem] uppercase tracking-[0.28em] text-primary"
                       variant="outline"
                     >
-                      Expense day
+                      Daily expenses
                     </Badge>
                     <Badge className="rounded-full px-3 py-1" variant="secondary">
                       {expenseDate}
@@ -645,14 +886,14 @@ function ProtectedExpenseEditor({
 
                   <div className="space-y-3">
                     <p className="text-xs font-medium uppercase tracking-[0.3em] text-muted-foreground">
-                      Single-day reimbursement sheet
+                      Simple reimbursement page
                     </p>
                     <CardTitle className="font-serif text-3xl tracking-[-0.03em] sm:text-5xl">
                       {formatDisplayDate(expenseDate)}
                     </CardTitle>
                     <CardDescription className="max-w-3xl text-sm leading-7 sm:text-base">
-                      Keep every row on this date, then export a cleaner company-branded
-                      paper form with signature space and appended receipt pages.
+                      Add each expense for this day, attach one or more receipt photos,
+                      then print a clean form with extra receipt pages.
                     </CardDescription>
                   </div>
                 </div>
@@ -661,13 +902,20 @@ function ProtectedExpenseEditor({
                   <ThemeSettingsSheet userEmail={session.userEmail} />
                   <Button
                     className="rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90"
+                    disabled={isPreparingPrint}
                     size="sm"
                     type="button"
                     variant="outline"
-                    onClick={handlePrint}
+                    onClick={() => {
+                      void handlePrint();
+                    }}
                   >
-                    <Printer className="size-4" />
-                    Export / PDF
+                    {isPreparingPrint ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                      <Printer className="size-4" />
+                    )}
+                    {isPreparingPrint ? "Preparing export..." : "Print or save PDF"}
                   </Button>
                   <Button
                     className="rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90"
@@ -740,7 +988,8 @@ function ProtectedExpenseEditor({
                       Daily line items
                     </CardTitle>
                     <CardDescription className="text-sm leading-7 sm:text-base">
-                      Expand any row to adjust type, amount, remarks, and receipt images.
+                      Expand any row to update the details, attach more than one receipt
+                      photo, or remove a photo before export.
                     </CardDescription>
                   </div>
 
@@ -753,170 +1002,214 @@ function ProtectedExpenseEditor({
 
               <CardContent className="px-5 py-5 sm:px-6 sm:py-6">
                 {rows.length === 0 ? (
-                  <div className="rounded-3xl border border-dashed border-white/10 bg-background/60 px-5 py-12 text-center text-sm text-muted-foreground">
-                    No expenses yet. Create the first row to begin the day sheet.
+                  <div className="rounded-[1.75rem] border border-dashed border-white/10 bg-background/60 px-5 py-12 text-center">
+                    <div className="mx-auto flex size-14 items-center justify-center rounded-full border border-primary/20 bg-primary/10 text-primary">
+                      <Receipt className="size-6" />
+                    </div>
+                    <p className="mt-5 font-serif text-2xl text-foreground">
+                      No expense lines yet
+                    </p>
+                    <p className="mx-auto mt-3 max-w-md text-sm leading-7 text-muted-foreground">
+                      Add your first line item to record the amount, a short note, and
+                      any receipt photos for this date.
+                    </p>
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {rows.map((row) => (
-                      <article
-                      className="rounded-3xl border border-white/10 bg-background/65 p-4"
-                      key={row.id}
-                    >
-                        <button
-                          className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-start sm:justify-between"
-                          type="button"
-                          onClick={() => toggleExpanded(row.id)}
+                    <div className="rounded-[1.6rem] border border-white/10 bg-background/55 px-4 py-3">
+                      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                        <Badge className="rounded-full px-3 py-1" variant="outline">
+                          Adds multiple receipt photos
+                        </Badge>
+                        <Badge className="rounded-full px-3 py-1" variant="outline">
+                          Saves automatically
+                        </Badge>
+                        <Badge className="rounded-full px-3 py-1" variant="outline">
+                          Prints extra receipt pages
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {rows.map((row) => {
+                      const rowNumber = rowNumberById.get(row.id) ?? row.id;
+
+                      return (
+                        <article
+                          className="rounded-[1.75rem] border border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] p-4 shadow-[0_18px_48px_-34px_rgba(15,23,42,0.55)]"
+                          key={row.id}
                         >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge className="rounded-full px-3 py-1">
-                                {findExpenseTypeLabel(row.typeId)}
-                              </Badge>
-                              <Badge className="rounded-full px-3 py-1" variant="outline">
-                                Expense {row.id}
-                              </Badge>
-                              {row.receipts.length > 0 ? (
-                                <Badge className="rounded-full px-3 py-1" variant="outline">
-                                  {row.receipts.length} receipt
-                                  {row.receipts.length === 1 ? "" : "s"}
+                          <button
+                            className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-start sm:justify-between"
+                            type="button"
+                            onClick={() => toggleExpanded(row.id)}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge className="rounded-full px-3 py-1">
+                                  {findExpenseTypeLabel(row.typeId)}
                                 </Badge>
-                              ) : null}
+                                <Badge className="rounded-full px-3 py-1" variant="outline">
+                                  Expense {rowNumber}
+                                </Badge>
+                                {row.receipts.length > 0 ? (
+                                  <Badge className="rounded-full px-3 py-1" variant="outline">
+                                    {row.receipts.length} photo
+                                    {row.receipts.length === 1 ? "" : "s"}
+                                  </Badge>
+                                ) : null}
+                              </div>
+
+                              <p className="mt-3 text-sm leading-6 text-foreground sm:text-base">
+                                {row.remark.trim()
+                                  ? buildRemarkSummary(row.remark)
+                                  : "Add a short note so everyone understands what this expense was for."}
+                              </p>
                             </div>
 
-                            <p className="mt-3 text-sm leading-6 text-foreground sm:text-base">
-                              {buildRemarkSummary(row.remark)}
-                            </p>
-                          </div>
+                            <div className="flex items-center justify-between gap-3 sm:justify-end">
+                              <span className="text-base font-semibold text-foreground">
+                                {row.amount.trim()
+                                  ? formatCurrency(parseAmount(row.amount))
+                                  : "THB 0.00"}
+                              </span>
+                              <span className="flex size-10 items-center justify-center rounded-2xl border border-white/10 bg-background/80 text-muted-foreground">
+                                {row.isExpanded ? (
+                                  <ChevronUp className="size-4" />
+                                ) : (
+                                  <ChevronDown className="size-4" />
+                                )}
+                              </span>
+                            </div>
+                          </button>
 
-                          <div className="flex items-center justify-between gap-3 sm:justify-end">
-                            <span className="text-base font-semibold text-foreground">
-                              {row.amount.trim()
-                                ? formatCurrency(parseAmount(row.amount))
-                                : "THB 0.00"}
-                            </span>
-                            <span className="flex size-10 items-center justify-center rounded-2xl border border-white/10 bg-background/80 text-muted-foreground">
-                              {row.isExpanded ? (
-                                <ChevronUp className="size-4" />
-                              ) : (
-                                <ChevronDown className="size-4" />
-                              )}
-                            </span>
-                          </div>
-                        </button>
+                          {row.isExpanded ? (
+                            <div className="mt-4 space-y-4 border-t border-border/60 pt-4">
+                              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_11rem]">
+                                <label className="block space-y-2">
+                                  <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+                                    Type
+                                  </span>
+                                  <Select
+                                    value={row.typeId}
+                                    onValueChange={(value) =>
+                                      updateRow(row.id, "typeId", value)
+                                    }
+                                  >
+                                    <SelectTrigger className="h-11 w-full rounded-2xl border-white/10 bg-background/75 px-4">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="rounded-2xl border-white/10 bg-popover/95 backdrop-blur-xl">
+                                      {EXPENSE_TYPES.map((expenseType) => (
+                                        <SelectItem key={expenseType.id} value={expenseType.id}>
+                                          {expenseType.label}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </label>
 
-                        {row.isExpanded ? (
-                          <div className="mt-4 space-y-4 border-t border-border/60 pt-4">
-                            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_11rem]">
+                                <label className="block space-y-2">
+                                  <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+                                    Amount (THB)
+                                  </span>
+                                  <Input
+                                    className="h-11 rounded-2xl border-white/10 bg-background/75 px-4 text-right"
+                                    min="0"
+                                    placeholder="0.00"
+                                    step="0.01"
+                                    type="number"
+                                    value={row.amount}
+                                    onChange={(event) =>
+                                      updateRow(row.id, "amount", event.target.value)
+                                    }
+                                  />
+                                </label>
+                              </div>
+
                               <label className="block space-y-2">
                                 <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
-                                  Type
+                                  Remark
                                 </span>
-                                <Select
-                                  value={row.typeId}
-                                  onValueChange={(value) =>
-                                    updateRow(row.id, "typeId", value)
-                                  }
-                                >
-                                  <SelectTrigger className="h-11 w-full rounded-2xl border-white/10 bg-background/75 px-4">
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent className="rounded-2xl border-white/10 bg-popover/95 backdrop-blur-xl">
-                                    {EXPENSE_TYPES.map((expenseType) => (
-                                      <SelectItem key={expenseType.id} value={expenseType.id}>
-                                        {expenseType.label}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </label>
-
-                              <label className="block space-y-2">
-                                <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
-                                  Amount (THB)
-                                </span>
-                                <Input
-                                  className="h-11 rounded-2xl border-white/10 bg-background/75 px-4 text-right"
-                                  min="0"
-                                  placeholder="0.00"
-                                  step="0.01"
-                                  type="number"
-                                  value={row.amount}
+                                <Textarea
+                                  className="min-h-24 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                                  placeholder="What was this expense for?"
+                                  value={row.remark}
                                   onChange={(event) =>
-                                    updateRow(row.id, "amount", event.target.value)
+                                    updateRow(row.id, "remark", event.target.value)
                                   }
                                 />
                               </label>
-                            </div>
 
-                            <label className="block space-y-2">
-                              <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
-                                Remark
-                              </span>
-                              <Textarea
-                                className="min-h-24 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
-                                placeholder="Where, why, who, route, or meeting context"
-                                value={row.remark}
-                                onChange={(event) =>
-                                  updateRow(row.id, "remark", event.target.value)
-                                }
-                              />
-                            </label>
+                              <div className="rounded-[1.45rem] border border-white/10 bg-background/55 p-3">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                                  <Button
+                                    asChild
+                                    className="rounded-full border-white/10 bg-background/70 px-4 shadow-none hover:bg-background/85"
+                                    size="sm"
+                                    variant="outline"
+                                  >
+                                    <label className="cursor-pointer">
+                                      <ImagePlus className="size-4" />
+                                      {row.receipts.length > 0
+                                        ? "Add more receipt photos"
+                                        : "Add receipt photos"}
+                                      <input
+                                        className="hidden"
+                                        type="file"
+                                        accept="image/*"
+                                        multiple
+                                        onChange={(event) => {
+                                          void handleReceiptChange(row.id, event.target.files);
+                                          event.target.value = "";
+                                        }}
+                                      />
+                                    </label>
+                                  </Button>
 
-                            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                              <Button
-                                asChild
-                                className="rounded-full border-white/10 bg-background/70 px-4 shadow-none hover:bg-background/85"
-                                size="sm"
-                                variant="outline"
-                              >
-                                <label className="cursor-pointer">
-                                  <ImagePlus className="size-4" />
-                                  Attach receipts
-                                  <input
-                                    className="hidden"
-                                    type="file"
-                                    accept="image/*"
-                                    multiple
-                                    onChange={(event) => {
-                                      void handleReceiptChange(row.id, event.target.files);
-                                    }}
-                                  />
-                                </label>
-                              </Button>
+                                  {row.receipts.length > 0 ? (
+                                    <Button
+                                      className="rounded-full px-4"
+                                      size="sm"
+                                      type="button"
+                                      variant="ghost"
+                                      onClick={() => toggleReceiptPreview(row.id)}
+                                    >
+                                      {row.isReceiptPreviewOpen ? "Hide photos" : "Show photos"} (
+                                      {row.receipts.length})
+                                    </Button>
+                                  ) : null}
 
-                              {row.receipts.length > 0 ? (
-                                <Button
-                                  className="rounded-full px-4"
-                                  size="sm"
-                                  type="button"
-                                  variant="ghost"
-                                  onClick={() => toggleReceiptPreview(row.id)}
-                                >
-                                  {row.isReceiptPreviewOpen ? "Hide" : "Show"} receipts (
-                                  {row.receipts.length})
-                                </Button>
+                                  <Button
+                                    className="rounded-full px-4 text-destructive hover:text-destructive"
+                                    size="sm"
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={() => requestRowRemoval(row.id)}
+                                  >
+                                    <Trash2 className="size-4" />
+                                    Remove row
+                                  </Button>
+                                </div>
+
+                                <p className="mt-3 text-sm text-muted-foreground">
+                                  You can keep more than one photo on the same expense line.
+                                </p>
+                              </div>
+
+                              {row.receipts.length > 0 && row.isReceiptPreviewOpen ? (
+                                <ReceiptPreviewGrid
+                                  receipts={row.receipts}
+                                  rowNumber={rowNumber}
+                                  onRemoveReceipt={(receipt) =>
+                                    requestReceiptRemoval(row.id, receipt)
+                                  }
+                                />
                               ) : null}
-
-                              <Button
-                                className="rounded-full px-4 text-destructive hover:text-destructive"
-                                size="sm"
-                                type="button"
-                                variant="ghost"
-                                onClick={() => removeRow(row.id)}
-                              >
-                                <Trash2 className="size-4" />
-                                Remove
-                              </Button>
                             </div>
-
-                            {row.receipts.length > 0 && row.isReceiptPreviewOpen ? (
-                              <ReceiptPreviewGrid receipts={row.receipts} />
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </article>
-                    ))}
+                          ) : null}
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
               </CardContent>
@@ -926,21 +1219,20 @@ function ProtectedExpenseEditor({
               <Card className="premium-panel rounded-[2rem] border-border/60 py-0">
                 <CardHeader className="gap-3 border-b border-border/60 px-5 py-5">
                   <Badge className="rounded-full px-3 py-1" variant="secondary">
-                    Export profile
+                    Print setup
                   </Badge>
                   <CardTitle className="font-serif text-2xl tracking-tight sm:text-3xl">
-                    Company + print setup
+                    Company and form details
                   </CardTitle>
                   <CardDescription className="text-sm leading-7">
-                    These selections apply to the full day form, not each individual
-                    expense row.
+                    These details appear across the full printed form.
                   </CardDescription>
                 </CardHeader>
 
                 <CardContent className="space-y-5 px-5 py-5">
                   <label className="block space-y-2">
                     <span className="text-sm font-medium text-foreground">
-                      Company on export
+                      Company for this form
                     </span>
                     <Select
                       disabled={companies.length === 0}
@@ -985,13 +1277,13 @@ function ProtectedExpenseEditor({
 
                       <div className="min-w-0">
                         <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                          Selected company
+                          Company on the form
                         </p>
                         <p className="mt-2 truncate text-sm font-medium text-foreground">
                           {selectedCompanyName || "No company selected yet"}
                         </p>
                         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          This name and logo appear in the exported header.
+                          The name and logo show in the printed header.
                         </p>
                       </div>
                     </div>
@@ -999,8 +1291,8 @@ function ProtectedExpenseEditor({
 
                   {companies.length === 0 ? (
                     <div className="rounded-3xl border border-dashed border-white/10 bg-background/60 px-4 py-4 text-sm text-muted-foreground">
-                      Save a company in the Company Headers tab to print a branded form
-                      header.
+                      Add a company in Company Headers if you want the printed form to
+                      include a branded header.
                     </div>
                   ) : null}
 
@@ -1010,9 +1302,10 @@ function ProtectedExpenseEditor({
                     </span>
                     <Select
                       value={exportLanguage}
-                      onValueChange={(value) =>
-                        setExportLanguage(value === "th" ? "th" : "en")
-                      }
+                      onValueChange={(value) => {
+                        setPrintError(null);
+                        setExportLanguage(value === "th" ? "th" : "en");
+                      }}
                     >
                       <SelectTrigger className="h-11 rounded-2xl border-white/10 bg-background/75 px-4">
                         <SelectValue />
@@ -1028,10 +1321,13 @@ function ProtectedExpenseEditor({
                     <span className="text-sm font-medium text-foreground">Employee name</span>
                     <Input
                       className="h-11 rounded-2xl border-white/10 bg-background/75 px-4"
-                      placeholder="Who is submitting this date"
+                      placeholder="Who is submitting this form?"
                       type="text"
                       value={employeeName}
-                      onChange={(event) => setEmployeeName(event.target.value)}
+                      onChange={(event) => {
+                        setPrintError(null);
+                        setEmployeeName(event.target.value);
+                      }}
                     />
                   </label>
 
@@ -1039,9 +1335,12 @@ function ProtectedExpenseEditor({
                     <span className="text-sm font-medium text-foreground">Note</span>
                     <Textarea
                       className="min-h-28 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
-                      placeholder="Optional note for approval, department, or accounting"
+                      placeholder="Optional note for approval or context"
                       value={note}
-                      onChange={(event) => setNote(event.target.value)}
+                      onChange={(event) => {
+                        setPrintError(null);
+                        setNote(event.target.value);
+                      }}
                     />
                   </label>
                 </CardContent>
@@ -1050,42 +1349,50 @@ function ProtectedExpenseEditor({
               <Card className="premium-panel rounded-[2rem] border-border/60 py-0">
                 <CardHeader className="gap-3 border-b border-border/60 px-5 py-5">
                   <Badge className="rounded-full px-3 py-1" variant="secondary">
-                    Summary
+                    Overview
                   </Badge>
                   <CardTitle className="font-serif text-2xl tracking-tight sm:text-3xl">
                     {formatCurrency(totalAmount)}
                   </CardTitle>
                   <CardDescription className="text-sm leading-7">
-                    {populatedRows.length} filled expense
+                    {populatedRows.length} filled expense line
                     {populatedRows.length === 1 ? "" : "s"} with {totalReceipts} receipt
-                    {totalReceipts === 1 ? "" : "s"} attached.
+                    photo{totalReceipts === 1 ? "" : "s"} attached.
                   </CardDescription>
                 </CardHeader>
 
                 <CardContent className="space-y-4 px-5 py-5">
-                  <div className="rounded-3xl border border-white/10 bg-background/65 p-4">
-                    <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                      Supabase sync
-                    </p>
-                    <p className="mt-2 text-sm text-foreground">
-                      {isSavingDocument
-                        ? "Saving changes..."
-                        : lastSavedAt
-                          ? `Last saved ${lastSavedAt}`
-                          : "Waiting for your first edit"}
-                    </p>
-                    {saveError ? (
-                      <p className="mt-2 text-sm text-destructive">{saveError}</p>
-                    ) : null}
+                  <div className={`rounded-3xl border p-4 ${editorStatus.tone}`}>
+                    <div className="flex items-start gap-3">
+                      <span className="mt-0.5">{editorStatus.icon}</span>
+                      <div>
+                        <p className="text-xs font-medium uppercase tracking-[0.24em] opacity-80">
+                          Page status
+                        </p>
+                        <p className="mt-2 text-sm font-medium text-foreground">
+                          {editorStatus.label}
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-foreground/80">
+                          {editorStatus.description}
+                        </p>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="rounded-3xl border border-white/10 bg-background/65 p-4">
                     <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                      Last export
+                      Print status
                     </p>
                     <p className="mt-2 text-sm text-foreground">
-                      {lastPrintedAt ?? "Not exported yet"}
+                      {isPreparingPrint
+                        ? "Preparing your receipt photos for print..."
+                        : lastPrintedAt
+                          ? `Last prepared ${lastPrintedAt}`
+                          : "Not printed yet"}
                     </p>
+                    {printError ? (
+                      <p className="mt-2 text-sm leading-6 text-destructive">{printError}</p>
+                    ) : null}
                   </div>
 
                   <div className="rounded-3xl border border-white/10 bg-background/65 p-4">
@@ -1094,29 +1401,42 @@ function ProtectedExpenseEditor({
                         <Globe2 className="size-4" />
                       </span>
                       <p className="text-sm leading-7 text-foreground">
-                        The print layout keeps the form on one compact signature page,
-                        then packs up to four receipt images on each following page.
+                        The printed form stays on one signature page, then adds up to four
+                        receipt photos on each extra page.
                       </p>
                     </div>
                   </div>
 
-                  <Button className="h-11 w-full rounded-2xl" type="button" onClick={handlePrint}>
-                    <Printer className="size-4" />
-                    Export this day sheet
+                  <Button
+                    className="h-11 w-full rounded-2xl"
+                    disabled={isPreparingPrint}
+                    type="button"
+                    onClick={() => {
+                      void handlePrint();
+                    }}
+                  >
+                    {isPreparingPrint ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : (
+                      <Printer className="size-4" />
+                    )}
+                    {isPreparingPrint ? "Preparing your export..." : "Print this day sheet"}
                   </Button>
                 </CardContent>
               </Card>
 
-              <Card className="rounded-[2rem] border-border/60 py-0">
+              <Card className="rounded-[2rem] border-border/60 bg-background/65 py-0">
                 <CardContent className="px-5 py-5">
                   <div className="flex items-center gap-3">
                     <span className="flex size-10 items-center justify-center rounded-2xl bg-primary/12 text-primary">
                       <NotebookPen className="size-4" />
                     </span>
                     <div>
-                      <p className="text-sm font-medium text-foreground">Supabase-backed day</p>
+                      <p className="text-sm font-medium text-foreground">
+                        Tip for a cleaner printout
+                      </p>
                       <p className="text-sm text-muted-foreground">
-                        Database rows + Storage assets
+                        Keep each note short and clear so the form stays easy to review.
                       </p>
                     </div>
                   </div>
@@ -1131,13 +1451,13 @@ function ProtectedExpenseEditor({
             <div className="flex items-start gap-3 border-b border-black/25 pb-3">
               <div className="flex h-[4.5rem] w-[4.5rem] shrink-0 items-center justify-center overflow-hidden rounded-[0.85rem]">
                 {selectedCompanyLogoUrl ? (
-                  <Image
+                  // eslint-disable-next-line @next/next/no-img-element -- eager loading keeps the logo available during print export.
+                  <img
                     alt={selectedCompanyName || exportCopy.companyPending}
                     className="h-full w-full object-contain"
-                    height={192}
+                    decoding="sync"
+                    loading="eager"
                     src={selectedCompanyLogoUrl}
-                    unoptimized
-                    width={192}
                   />
                 ) : (
                   <span className="text-[11px] font-medium uppercase tracking-[0.24em] text-black/45">
@@ -1191,12 +1511,12 @@ function ProtectedExpenseEditor({
                 </div>
 
                 <div className="divide-y divide-black/20">
-                  {printableFormRows.map((row) => (
+                  {printableFormRows.map(({ lineNumber, row }) => (
                     <div
                       className="grid grid-cols-[0.65fr_minmax(0,4.2fr)_1.2fr] gap-2 px-2 py-2 text-[12px]"
                       key={row.id}
                     >
-                      <span>{row.id}</span>
+                      <span>{lineNumber}</span>
                       <div>
                         <p className="font-medium leading-[1.125rem]">
                           {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
@@ -1273,13 +1593,13 @@ function ProtectedExpenseEditor({
                     </p>
 
                     <div className="mt-2 flex h-48 items-center justify-center overflow-hidden border border-black/25 p-2">
-                      <Image
+                      {/* eslint-disable-next-line @next/next/no-img-element -- eager loading avoids missing receipt images in printed output. */}
+                      <img
                         alt={entry.label}
                         className="h-full w-full object-contain"
-                        height={900}
+                        decoding="sync"
+                        loading="eager"
                         src={entry.receipt.previewUrl}
-                        unoptimized
-                        width={900}
                       />
                     </div>
 
@@ -1292,6 +1612,68 @@ function ProtectedExpenseEditor({
             </div>
           </section>
         ))}
+
+        {isPreparingPrint ? (
+          <div className="screen-only fixed inset-0 z-40 flex items-center justify-center bg-background/75 px-4 backdrop-blur-md">
+            <div className="premium-panel w-full max-w-md rounded-[2rem] border border-border/60 px-6 py-7 text-center shadow-2xl">
+              <div className="mx-auto flex size-16 items-center justify-center rounded-full border border-primary/20 bg-primary/10 text-primary">
+                <LoaderCircle className="size-7 animate-spin" />
+              </div>
+              <p className="mt-5 font-serif text-3xl tracking-tight text-foreground">
+                Preparing your export
+              </p>
+              <p className="mt-3 text-sm leading-7 text-muted-foreground">
+                We&apos;re loading the receipt photos first so they appear properly in the
+                printed file.
+              </p>
+              <div className="mt-6 flex items-center justify-center gap-2">
+                <span className="size-2 rounded-full bg-primary/90 animate-[pulse_1.4s_ease-in-out_infinite]" />
+                <span
+                  className="size-2 rounded-full bg-primary/65 animate-[pulse_1.4s_ease-in-out_180ms_infinite]"
+                />
+                <span
+                  className="size-2 rounded-full bg-primary/45 animate-[pulse_1.4s_ease-in-out_360ms_infinite]"
+                />
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <AlertDialog
+          open={pendingRemoval !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingRemoval(null);
+            }
+          }}
+        >
+          <AlertDialogContent className="rounded-[1.75rem] border-border/60 p-6">
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {pendingRemoval?.kind === "receipt"
+                  ? "Remove this receipt photo?"
+                  : "Remove this expense row?"}
+              </AlertDialogTitle>
+              <AlertDialogDescription className="leading-7">
+                {pendingRemoval?.kind === "receipt"
+                  ? `This will remove "${pendingRemoval.receiptName}" from expense ${pendingRemoval.rowNumber}.`
+                  : pendingRemoval
+                    ? `This will remove expense ${pendingRemoval.rowNumber} and all of its receipt photos.`
+                    : "This action cannot be undone on this page."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel className="rounded-full">Keep it</AlertDialogCancel>
+              <AlertDialogAction
+                className="rounded-full"
+                variant="destructive"
+                onClick={confirmPendingRemoval}
+              >
+                Remove
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
@@ -1361,6 +1743,74 @@ function chunkEntries<T>(entries: T[], size: number) {
   return chunks;
 }
 
+function LoadingExpenseDayState() {
+  return (
+    <Card className="premium-panel rounded-[2rem] border-border/60 py-0">
+      <CardContent className="px-6 py-8 sm:px-10 sm:py-10">
+        <div className="flex flex-col gap-8">
+          <div className="text-center">
+            <Badge className="rounded-full px-3 py-1" variant="secondary">
+              Opening your page
+            </Badge>
+            <div className="mt-5 flex items-center justify-center gap-3">
+              {[0, 180, 360].map((delay) => (
+                <span
+                  className="size-3 rounded-full bg-primary/80 animate-[pulse_1.6s_ease-in-out_infinite]"
+                  key={delay}
+                  style={{ animationDelay: `${delay}ms` }}
+                />
+              ))}
+            </div>
+            <p className="mt-5 font-serif text-3xl tracking-tight text-foreground">
+              Getting your expenses ready
+            </p>
+            <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-muted-foreground">
+              We&apos;re loading your saved rows, receipt photos, and company details for
+              this day.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-[1.75rem] border border-white/10 bg-background/55 p-5">
+              <Skeleton className="h-4 w-28 rounded-full" />
+              <Skeleton className="mt-4 h-10 w-3/4 rounded-2xl" />
+              <Skeleton className="mt-3 h-4 w-full rounded-full" />
+              <Skeleton className="mt-2 h-4 w-5/6 rounded-full" />
+            </div>
+            <div className="rounded-[1.75rem] border border-white/10 bg-background/55 p-5">
+              <div className="grid grid-cols-2 gap-3">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <Skeleton className="h-24 rounded-[1.5rem]" key={index} />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <div
+                className="rounded-[1.75rem] border border-white/10 bg-background/55 p-5"
+                key={index}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-3">
+                    <div className="flex gap-2">
+                      <Skeleton className="h-7 w-28 rounded-full" />
+                      <Skeleton className="h-7 w-20 rounded-full" />
+                    </div>
+                    <Skeleton className="h-4 w-72 rounded-full" />
+                  </div>
+                  <Skeleton className="h-10 w-24 rounded-2xl" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function EditorMetric({
   label,
   value,
@@ -1401,25 +1851,56 @@ function InfoLine({
 }
 
 function ReceiptPreviewGrid({
+  onRemoveReceipt,
   receipts,
+  rowNumber,
 }: {
+  onRemoveReceipt: (receipt: ReceiptDraft) => void;
   receipts: ReceiptDraft[];
+  rowNumber: number;
 }) {
   return (
-    <div className="rounded-3xl border border-white/10 bg-background/60 p-3">
+    <div className="rounded-[1.6rem] border border-white/10 bg-background/60 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-foreground">Receipt photos for expense {rowNumber}</p>
+          <p className="text-xs text-muted-foreground">
+            Remove any photo you no longer want on the export.
+          </p>
+        </div>
+        <Badge className="rounded-full px-3 py-1" variant="outline">
+          {receipts.length} photo{receipts.length === 1 ? "" : "s"}
+        </Badge>
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-2">
         {receipts.map((receipt) => (
           <div
-            className="flex items-center gap-3 rounded-3xl border border-white/10 bg-background/80 p-3"
+            className="overflow-hidden rounded-[1.4rem] border border-white/10 bg-background/85"
             key={receipt.id}
           >
-            <div
-              className="h-16 w-16 shrink-0 rounded-2xl bg-cover bg-center"
-              style={{
-                backgroundImage: `url("${receipt.previewUrl}")`,
-              }}
-            />
-            <div className="min-w-0">
+            <div className="relative border-b border-white/10 bg-black/5">
+              {/* eslint-disable-next-line @next/next/no-img-element -- preview cards use raw urls/data urls and should render immediately. */}
+              <img
+                alt={receipt.name}
+                className="h-40 w-full object-cover"
+                decoding="async"
+                loading="lazy"
+                src={receipt.previewUrl}
+              />
+              <Button
+                className="absolute right-3 top-3 rounded-full border-white/15 bg-background/85 shadow-lg backdrop-blur"
+                size="icon-xs"
+                type="button"
+                variant="secondary"
+                onClick={() => onRemoveReceipt(receipt)}
+              >
+                <X className="size-3.5" />
+                <span className="sr-only">Remove receipt photo</span>
+              </Button>
+            </div>
+
+            <div className="p-3">
               <p className="truncate text-sm font-medium text-foreground">{receipt.name}</p>
               <p className="mt-1 text-xs text-muted-foreground">{receipt.sizeLabel}</p>
             </div>
