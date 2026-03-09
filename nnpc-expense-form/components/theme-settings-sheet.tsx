@@ -142,7 +142,7 @@ export function ThemeSettingsSheet({
             <CardHeader className="gap-2 px-5 pt-5">
               <CardTitle className="text-base">Session</CardTitle>
               <CardDescription>
-                This prototype stores expense drafts in local browser storage.
+                This prototype stores reports and assets in Supabase.
               </CardDescription>
             </CardHeader>
             <CardContent className="px-5 pb-5">

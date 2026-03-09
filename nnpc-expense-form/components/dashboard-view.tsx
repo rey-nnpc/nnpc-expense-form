@@ -1,20 +1,19 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
+import AuthGate, { type AuthSession } from "@/components/auth-gate";
 import { ThemeSettingsSheet } from "@/components/theme-settings-sheet";
+import { TopRouteTabs } from "@/components/top-route-tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import AuthGate, { type AuthSession } from "./auth-gate";
-import { formatDisplayDate } from "../lib/date";
-import {
-  formatCurrency,
-  readExpenseSummaries,
-  type ExpenseSummary,
-} from "../lib/expense-data";
+import { SESSION_EXPIRED_MESSAGE } from "@/lib/company-data";
+import { formatDisplayDate } from "@/lib/date";
+import { formatCurrency, type ExpenseSummary } from "@/lib/expense-data";
+import { listExpenseSummaries } from "@/lib/report-data";
 
 export default function DashboardView({
   defaultExpenseDate,
@@ -45,13 +44,54 @@ function ProtectedDashboard({
 }) {
   const router = useRouter();
   const [selectedDate, setSelectedDate] = useState(defaultExpenseDate);
-  const [summaries] = useState<ExpenseSummary[]>(() => readExpenseSummaries());
+  const [summaries, setSummaries] = useState<ExpenseSummary[]>([]);
+  const [isLoadingSummaries, setIsLoadingSummaries] = useState(true);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
 
   const matchingSummary = summaries.find((summary) => summary.date === selectedDate);
 
+  useEffect(() => {
+    let isActive = true;
+
+    void listExpenseSummaries(session.accessToken)
+      .then((nextSummaries) => {
+        if (!isActive) {
+          return;
+        }
+
+        setSummaries(nextSummaries);
+        setSummaryError(null);
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+          void logout();
+          return;
+        }
+
+        setSummaryError(
+          error instanceof Error
+            ? error.message
+            : "Expense summaries could not be loaded from Supabase.",
+        );
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoadingSummaries(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [logout, session.accessToken]);
+
   return (
     <div className="page-shell min-h-screen">
-      <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 lg:py-8">
+      <div className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 lg:py-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <h1 className="font-serif text-3xl tracking-tight text-foreground sm:text-4xl">
@@ -78,6 +118,8 @@ function ProtectedDashboard({
             </Button>
           </div>
         </header>
+
+        <TopRouteTabs activeSection="expenses" />
 
         <Card className="mt-6 rounded-[1.75rem] border-border/60 py-0 shadow-none">
           <CardContent className="px-4 py-4 sm:px-5">
@@ -107,7 +149,15 @@ function ProtectedDashboard({
               <span>Total</span>
             </div>
 
-            {summaries.length === 0 ? (
+            {summaryError ? (
+              <div className="px-4 py-8 text-sm text-destructive sm:px-5">
+                {summaryError}
+              </div>
+            ) : isLoadingSummaries ? (
+              <div className="px-4 py-8 text-sm text-muted-foreground sm:px-5">
+                Loading reports from Supabase...
+              </div>
+            ) : summaries.length === 0 ? (
               <div className="px-4 py-10 text-sm text-muted-foreground sm:px-5">
                 No saved dates.
               </div>

@@ -8,7 +8,14 @@ export type ReceiptDraft = {
   name: string;
   previewUrl: string;
   sizeLabel: string;
+  bucketName?: string;
+  objectPath?: string;
+  mimeType?: string | null;
+  file?: File;
+  fileSizeBytes?: number | null;
 };
+
+export type ExportLanguage = "en" | "th";
 
 export type ExpenseRow = {
   id: number;
@@ -20,22 +27,10 @@ export type ExpenseRow = {
   isReceiptPreviewOpen: boolean;
 };
 
-type StoredExpenseRow = Omit<ExpenseRow, "isExpanded" | "isReceiptPreviewOpen">;
-
-type StoredExpenseDraft = {
-  date: string;
-  employeeName: string;
-  note: string;
-  rows: StoredExpenseRow[];
-  updatedAt: string;
-};
-
 export type ExpenseSummary = {
   date: string;
   totalAmount: number;
 };
-
-const EXPENSE_STORAGE_KEY = "nnpc-expense-drafts";
 
 export const EXPENSE_TYPES: ExpenseType[] = [
   { id: "transportation", label: "Transportation" },
@@ -124,99 +119,4 @@ export function buildRemarkSummary(remark: string) {
   }
 
   return `${trimmedRemark.slice(0, 69)}...`;
-}
-
-function canUseStorage() {
-  return typeof window !== "undefined";
-}
-
-function readStore() {
-  if (!canUseStorage()) {
-    return {} as Record<string, StoredExpenseDraft>;
-  }
-
-  const rawValue = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
-
-  if (!rawValue) {
-    return {} as Record<string, StoredExpenseDraft>;
-  }
-
-  try {
-    return JSON.parse(rawValue) as Record<string, StoredExpenseDraft>;
-  } catch {
-    window.localStorage.removeItem(EXPENSE_STORAGE_KEY);
-    return {} as Record<string, StoredExpenseDraft>;
-  }
-}
-
-function writeStore(nextValue: Record<string, StoredExpenseDraft>) {
-  if (!canUseStorage()) {
-    return;
-  }
-
-  window.localStorage.setItem(EXPENSE_STORAGE_KEY, JSON.stringify(nextValue));
-}
-
-export function readExpenseSummaries() {
-  return Object.values(readStore())
-    .map((draft) => ({
-      date: draft.date,
-      totalAmount: draft.rows.reduce(
-        (sum, row) => sum + parseAmount(row.amount),
-        0,
-      ),
-    }))
-    .sort((left, right) => right.date.localeCompare(left.date));
-}
-
-export function readExpenseDraft(date: string) {
-  const draft = readStore()[date];
-
-  if (!draft) {
-    return null;
-  }
-
-  return draft;
-}
-
-export function saveExpenseDraft({
-  date,
-  employeeName,
-  note,
-  rows,
-}: {
-  date: string;
-  employeeName: string;
-  note: string;
-  rows: ExpenseRow[];
-}) {
-  const store = readStore();
-
-  store[date] = {
-    date,
-    employeeName,
-    note,
-    rows: rows.map((row) => ({
-      id: row.id,
-      typeId: row.typeId,
-      amount: row.amount,
-      remark: row.remark,
-      receipts: row.receipts,
-    })),
-    updatedAt: new Date().toISOString(),
-  };
-
-  writeStore(store);
-}
-
-export function hydrateRowsFromDraft(draft: ReturnType<typeof readExpenseDraft>) {
-  if (!draft || draft.rows.length === 0) {
-    return [] as ExpenseRow[];
-  }
-
-  return draft.rows.map((row) => ({
-    ...row,
-    isExpanded: !hasRowContent(row),
-    isReceiptPreviewOpen: false,
-  }));
 }

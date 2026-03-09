@@ -242,6 +242,11 @@ button {
 }
 
 @media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
   :root {
     --background: #ffffff;
     --surface: #ffffff;
@@ -249,6 +254,8 @@ button {
 
   body {
     background: #ffffff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   body::before,
@@ -274,8 +281,8 @@ button {
   }
 
   .print-card {
-    margin: 0 !important;
-    border: 1px solid #d1d5db !important;
+    margin: 0 auto !important;
+    border: 0 !important;
     border-radius: 0 !important;
     box-shadow: none !important;
   }
@@ -283,6 +290,7 @@ button {
   .print-sheet {
     break-inside: avoid;
     page-break-inside: avoid;
+    width: 100% !important;
   }
 }
 

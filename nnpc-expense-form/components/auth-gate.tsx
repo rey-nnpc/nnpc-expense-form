@@ -27,8 +27,14 @@ type AuthMode = "login" | "signup";
 
 type AuthPayload = {
   access_token?: string;
+  refresh_token?: string;
+  expires_at?: number;
+  expires_in?: number;
   session?: {
     access_token?: string;
+    refresh_token?: string;
+    expires_at?: number;
+    expires_in?: number;
   };
   user?: {
     email?: string;
@@ -45,7 +51,9 @@ type AuthMessage = {
 
 export type AuthSession = {
   accessToken: string;
+  refreshToken: string;
   userEmail: string;
+  expiresAt: number | null;
 };
 
 const AUTH_STORAGE_KEY = "nnpc-expense-auth-session";
@@ -54,6 +62,7 @@ const SUPABASE_PUBLISHABLE_KEY =
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ??
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
   "";
+const SESSION_EXPIRED_COPY = "Your session expired. Log in again.";
 
 function readErrorMessage(payload: AuthPayload) {
   return (
@@ -62,6 +71,136 @@ function readErrorMessage(payload: AuthPayload) {
     payload.message ??
     "Supabase authentication failed."
   );
+}
+
+function readStoredSession(rawValue: string) {
+  const parsedValue = JSON.parse(rawValue) as Partial<AuthSession>;
+
+  if (
+    typeof parsedValue.accessToken !== "string" ||
+    typeof parsedValue.userEmail !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    accessToken: parsedValue.accessToken,
+    refreshToken:
+      typeof parsedValue.refreshToken === "string" ? parsedValue.refreshToken : "",
+    userEmail: parsedValue.userEmail,
+    expiresAt:
+      typeof parsedValue.expiresAt === "number"
+        ? parsedValue.expiresAt
+        : deriveAccessTokenExpiry(parsedValue.accessToken),
+  } satisfies AuthSession;
+}
+
+function deriveAccessTokenExpiry(accessToken: string) {
+  const [, payloadSegment] = accessToken.split(".");
+
+  if (!payloadSegment) {
+    return null;
+  }
+
+  try {
+    const paddedSegment = payloadSegment.padEnd(
+      payloadSegment.length + ((4 - (payloadSegment.length % 4)) % 4),
+      "=",
+    );
+    const normalizedSegment = paddedSegment.replace(/-/g, "+").replace(/_/g, "/");
+    const decodedPayload = JSON.parse(globalThis.atob(normalizedSegment)) as {
+      exp?: number;
+    };
+
+    return typeof decodedPayload.exp === "number" ? decodedPayload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildAuthSession({
+  fallbackEmail,
+  payload,
+  previousSession,
+}: {
+  fallbackEmail: string;
+  payload: AuthPayload;
+  previousSession?: AuthSession | null;
+}) {
+  const accessToken = payload.access_token ?? payload.session?.access_token ?? "";
+
+  if (!accessToken) {
+    return null;
+  }
+
+  const expiresIn = payload.expires_in ?? payload.session?.expires_in;
+
+  return {
+    accessToken,
+    refreshToken:
+      payload.refresh_token ??
+      payload.session?.refresh_token ??
+      previousSession?.refreshToken ??
+      "",
+    userEmail: payload.user?.email ?? previousSession?.userEmail ?? fallbackEmail,
+    expiresAt:
+      payload.expires_at ??
+      payload.session?.expires_at ??
+      (typeof expiresIn === "number"
+        ? Math.floor(Date.now() / 1000) + expiresIn
+        : deriveAccessTokenExpiry(accessToken)),
+  } satisfies AuthSession;
+}
+
+function shouldRefreshSession(session: AuthSession) {
+  if (!session.refreshToken || !session.expiresAt) {
+    return false;
+  }
+
+  return Date.now() >= session.expiresAt * 1000 - 60_000;
+}
+
+function isSessionExpired(session: AuthSession) {
+  if (!session.expiresAt) {
+    return false;
+  }
+
+  return Date.now() >= session.expiresAt * 1000 - 15_000;
+}
+
+async function requestSessionRefresh(currentSession: AuthSession) {
+  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY || !currentSession.refreshToken) {
+    throw new Error(SESSION_EXPIRED_COPY);
+  }
+
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      refresh_token: currentSession.refreshToken,
+    }),
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as AuthPayload;
+
+  if (!response.ok) {
+    throw new Error(readErrorMessage(payload));
+  }
+
+  const nextSession = buildAuthSession({
+    fallbackEmail: currentSession.userEmail,
+    payload,
+    previousSession: currentSession,
+  });
+
+  if (!nextSession) {
+    throw new Error(SESSION_EXPIRED_COPY);
+  }
+
+  return nextSession;
 }
 
 export default function AuthGate({
@@ -80,20 +219,135 @@ export default function AuthGate({
   const [authMessage, setAuthMessage] = useState<AuthMessage | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
 
-  useEffect(() => {
-    const storedSession = window.localStorage.getItem(AUTH_STORAGE_KEY);
+  const persistSession = (nextSession: AuthSession) => {
+    setSession(nextSession);
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextSession));
+  };
 
-    if (storedSession) {
-      try {
-        const parsedSession = JSON.parse(storedSession) as AuthSession;
-        setSession(parsedSession);
-      } catch {
-        window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  const clearSession = (message: AuthMessage | null = null) => {
+    setSession(null);
+    setPassword("");
+    setAuthMode("login");
+    setAuthMessage(message);
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  };
+
+  useEffect(() => {
+    let isActive = true;
+
+    const restoreSession = async () => {
+      const storedSession = window.localStorage.getItem(AUTH_STORAGE_KEY);
+
+      if (!storedSession) {
+        if (isActive) {
+          setIsReady(true);
+        }
+        return;
       }
+
+      try {
+        const parsedSession = readStoredSession(storedSession);
+
+        if (!parsedSession) {
+          window.localStorage.removeItem(AUTH_STORAGE_KEY);
+
+          if (isActive) {
+            setIsReady(true);
+          }
+
+          return;
+        }
+
+        const nextSession = shouldRefreshSession(parsedSession)
+          ? await requestSessionRefresh(parsedSession)
+          : isSessionExpired(parsedSession)
+            ? null
+            : parsedSession;
+
+        if (isActive) {
+          if (nextSession) {
+            persistSession(nextSession);
+            setAuthMessage(null);
+          } else {
+            clearSession({
+              tone: "info",
+              text: SESSION_EXPIRED_COPY,
+            });
+          }
+        }
+      } catch {
+        if (isActive) {
+          clearSession({
+            tone: "info",
+            text: SESSION_EXPIRED_COPY,
+          });
+        }
+      } finally {
+        if (isActive) {
+          setIsReady(true);
+        }
+      }
+    };
+
+    void restoreSession();
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session?.expiresAt) {
+      return;
     }
 
-    setIsReady(true);
-  }, []);
+    let isActive = true;
+
+    if (!session.refreshToken) {
+      const timeoutId = window.setTimeout(() => {
+        if (isActive) {
+          clearSession({
+            tone: "info",
+            text: SESSION_EXPIRED_COPY,
+          });
+        }
+      }, Math.max(session.expiresAt * 1000 - Date.now(), 0));
+
+      return () => {
+        isActive = false;
+        window.clearTimeout(timeoutId);
+      };
+    }
+
+    const refreshSession = async () => {
+      try {
+        const nextSession = await requestSessionRefresh(session);
+
+        if (isActive) {
+          persistSession(nextSession);
+          setAuthMessage(null);
+        }
+      } catch {
+        if (isActive) {
+          clearSession({
+            tone: "info",
+            text: SESSION_EXPIRED_COPY,
+          });
+        }
+      }
+    };
+
+    const refreshDelayMs = Math.max(session.expiresAt * 1000 - Date.now() - 60_000, 0);
+
+    const timeoutId = window.setTimeout(() => {
+      void refreshSession();
+    }, refreshDelayMs);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [session]);
 
   const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -145,17 +399,13 @@ export default function AuthGate({
         return;
       }
 
-      const accessToken = payload.access_token ?? payload.session?.access_token ?? "";
-      const userEmail = payload.user?.email ?? email.trim();
+      const nextSession = buildAuthSession({
+        fallbackEmail: email.trim(),
+        payload,
+      });
 
-      if (accessToken) {
-        const nextSession = {
-          accessToken,
-          userEmail,
-        };
-
-        setSession(nextSession);
-        window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextSession));
+      if (nextSession) {
+        persistSession(nextSession);
         setAuthMessage(null);
       } else if (authMode === "signup") {
         setAuthMode("login");
@@ -197,11 +447,7 @@ export default function AuthGate({
       }
     }
 
-    setSession(null);
-    setPassword("");
-    setAuthMode("login");
-    setAuthMessage(null);
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    clearSession();
   };
 
   if (!isReady) {
@@ -271,7 +517,7 @@ export default function AuthGate({
                 />
                 <FeatureCard
                   title="Receipt workflow"
-                  description="Attach image receipts per row and keep the draft recoverable in local storage."
+                  description="Attach image receipts per row and sync them to Supabase Storage and Postgres."
                   icon={<Sparkles className="size-4" />}
                 />
                 <FeatureCard
@@ -286,8 +532,9 @@ export default function AuthGate({
                   Prototype behavior
                 </p>
                 <p className="mt-3 text-sm leading-7 text-foreground">
-                  Local browser storage keeps the expense drafts. Authentication still
-                  depends on your Supabase URL and publishable key from `.env.local`.
+                  Expense days, company headers, and uploaded files are stored in your
+                  Supabase project. Authentication still depends on your Supabase URL
+                  and publishable key from `.env.local`.
                 </p>
               </div>
             </div>
