@@ -106,7 +106,8 @@ const EXPORT_COPY: Record<
     employee: string;
     note: string;
     line: string;
-    details: string;
+    expenseType: string;
+    expenseNote: string;
     amount: string;
     total: string;
     noExpenses: string;
@@ -128,7 +129,8 @@ const EXPORT_COPY: Record<
     employee: "Employee",
     note: "Note",
     line: "No.",
-    details: "Expense details",
+    expenseType: "Expense type",
+    expenseNote: "Expense note",
     amount: "Amount",
     total: "Total amount",
     noExpenses: "No expenses added for this day.",
@@ -149,7 +151,8 @@ const EXPORT_COPY: Record<
     employee: "ชื่อผู้เบิก",
     note: "หมายเหตุ",
     line: "ลำดับ",
-    details: "รายการค่าใช้จ่าย",
+    expenseType: "ประเภทค่าใช้จ่าย",
+    expenseNote: "รายละเอียด",
     amount: "จำนวนเงิน",
     total: "รวมจำนวนเงิน",
     noExpenses: "ยังไม่มีรายการค่าใช้จ่ายสำหรับวันนี้",
@@ -1503,36 +1506,47 @@ function ProtectedExpenseEditor({
                 {exportCopy.noExpenses}
               </div>
             ) : (
-              <div className="mt-3 overflow-hidden border border-black/30">
-                <div className="grid grid-cols-[0.65fr_minmax(0,4.2fr)_1.2fr] gap-2 border-b border-black/30 px-2 py-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-black/80">
-                  <span>{exportCopy.line}</span>
-                  <span>{exportCopy.details}</span>
-                  <span className="text-right">{exportCopy.amount}</span>
+              <div className="mt-3 overflow-hidden border border-black/40">
+                <div className="grid grid-cols-[0.7fr_1.85fr_3.15fr_1.35fr] bg-black/[0.035] text-[9px] font-semibold uppercase tracking-[0.12em] text-black/85">
+                  <div className="border-r border-b border-black/35 px-2 py-1.5">
+                    {exportCopy.line}
+                  </div>
+                  <div className="border-r border-b border-black/35 px-2 py-1.5">
+                    {exportCopy.expenseType}
+                  </div>
+                  <div className="border-r border-b border-black/35 px-2 py-1.5">
+                    {exportCopy.expenseNote}
+                  </div>
+                  <div className="border-b border-black/35 px-2 py-1.5 text-right">
+                    {exportCopy.amount}
+                  </div>
                 </div>
 
-                <div className="divide-y divide-black/20">
-                  {printableFormRows.map(({ lineNumber, row }) => (
-                    <div
-                      className="grid grid-cols-[0.65fr_minmax(0,4.2fr)_1.2fr] gap-2 px-2 py-2 text-[12px]"
-                      key={row.id}
-                    >
-                      <span>{lineNumber}</span>
-                      <div>
-                        <p className="font-medium leading-[1.125rem]">
-                          {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
-                        </p>
-                        <p className="mt-0.5 line-clamp-1 text-[10px] leading-4 text-black/65">
-                          {row.remark || exportCopy.emptyRemark}
-                        </p>
-                      </div>
-                      <span className="text-right">
-                        {row.amount.trim()
-                          ? formatPrintAmount(parseAmount(row.amount), exportLanguage)
-                          : "-"}
-                      </span>
+                {printableFormRows.map(({ lineNumber, row }) => (
+                  <div
+                    className="grid grid-cols-[0.7fr_1.85fr_3.15fr_1.35fr] text-[11px] text-black"
+                    key={row.id}
+                  >
+                    <div className="border-r border-b border-black/25 px-2 py-2 text-center font-medium">
+                      {lineNumber}
                     </div>
-                  ))}
-                </div>
+                    <div className="border-r border-b border-black/25 px-2 py-2">
+                      <p className="line-clamp-2 font-medium leading-[1.15rem]">
+                        {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
+                      </p>
+                    </div>
+                    <div className="border-r border-b border-black/25 px-2 py-2">
+                      <p className="line-clamp-2 leading-[1.15rem] text-black/78">
+                        {row.remark || exportCopy.emptyRemark}
+                      </p>
+                    </div>
+                    <div className="border-b border-black/25 px-2 py-2 text-right font-medium">
+                      {row.amount.trim()
+                        ? formatPrintAmount(parseAmount(row.amount), exportLanguage)
+                        : "-"}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
 
