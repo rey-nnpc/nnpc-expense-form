@@ -12,7 +12,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { readExpenseSummariesCache, writeExpenseSummariesCache } from "@/lib/browser-cache";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/company-data";
-import { formatDisplayDate, getBangkokDateInputValue } from "@/lib/date";
+import {
+  formatDisplayDate,
+  formatExpenseReferenceCode,
+  getBangkokDateInputValue,
+} from "@/lib/date";
 import { formatCurrency, type ExpenseSummary } from "@/lib/expense-data";
 import { listExpenseSummaries } from "@/lib/report-data";
 
@@ -183,7 +187,7 @@ function ProtectedDashboard({
                       {formatDisplayDate(summary.date)}
                     </span>
                     <span className="min-w-0 truncate text-muted-foreground">
-                      {summary.expenseCode || "Pending"}
+                      {formatExpenseReferenceCode(summary.date)}
                     </span>
                     <span className="text-foreground">
                       {formatCurrency(summary.totalAmount)}

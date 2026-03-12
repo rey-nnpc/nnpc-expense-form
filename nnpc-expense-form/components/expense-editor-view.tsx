@@ -77,7 +77,11 @@ import {
   listUserCompanies,
   type CompanyRecord,
 } from "../lib/company-data";
-import { formatDisplayDate } from "../lib/date";
+import {
+  formatDisplayDate,
+  formatExpenseLineReferenceCode,
+  formatExpenseReferenceCode,
+} from "../lib/date";
 import {
   EXPENSE_TYPES,
   buildRemarkSummary,
@@ -362,7 +366,6 @@ function ProtectedExpenseEditor({
   const [loadedCompanyLogoBucketName, setLoadedCompanyLogoBucketName] = useState("");
   const [loadedCompanyLogoObjectPath, setLoadedCompanyLogoObjectPath] = useState("");
   const [loadedCompanyLogoUrl, setLoadedCompanyLogoUrl] = useState("");
-  const [expenseCode, setExpenseCode] = useState("");
   const [exportLanguage, setExportLanguage] = useState<ExportLanguage>("en");
   const [note, setNote] = useState("");
   const [rows, setRows] = useState<ExpenseRow[]>([]);
@@ -406,7 +409,6 @@ function ProtectedExpenseEditor({
       setLoadedCompanyLogoBucketName("");
       setLoadedCompanyLogoObjectPath("");
       setLoadedCompanyLogoUrl("");
-      setExpenseCode("");
       setExportLanguage("en");
       setNote("");
       setRows([]);
@@ -418,7 +420,6 @@ function ProtectedExpenseEditor({
       setLoadedCompanyLogoBucketName(existingReport.companyLogoBucketName);
       setLoadedCompanyLogoObjectPath(existingReport.companyLogoObjectPath);
       setLoadedCompanyLogoUrl(existingReport.companyLogoUrl);
-      setExpenseCode(existingReport.expenseCode);
       setExportLanguage(existingReport.exportLanguage);
       setNote(existingReport.note);
       setRows(buildRowsFromLoadedReport(existingReport.rows));
@@ -532,7 +533,6 @@ function ProtectedExpenseEditor({
       });
 
       setSaveError(null);
-      setExpenseCode(saveResult.expenseCode);
       setLastSavedAt(
         new Intl.DateTimeFormat("en-US", {
           dateStyle: "medium",
@@ -649,6 +649,7 @@ function ProtectedExpenseEditor({
     lineNumber: index + 1,
     row,
   }));
+  const displayExpenseReference = formatExpenseReferenceCode(expenseDate);
   const totalAmount = rows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const totalReceipts = rows.reduce((sum, row) => sum + row.receipts.length, 0);
   const exportCopy = EXPORT_COPY[exportLanguage];
@@ -661,7 +662,7 @@ function ProtectedExpenseEditor({
   const printableReceipts = populatedRowsWithLineNumbers.flatMap(({ lineNumber, row }) =>
     row.receipts.map((receipt, receiptIndex) => ({
       key: `${row.id}-${receipt.id}`,
-      label: `${exportCopy.receiptLabel} - ${formatExpenseLineReference(expenseCode, lineNumber)}${
+      label: `${exportCopy.receiptLabel} - ${formatExpenseLineReferenceCode(expenseDate, lineNumber)}${
         row.receipts.length > 1 ? `.${receiptIndex + 1}` : ""
       }`,
       lineNumber,
@@ -838,7 +839,7 @@ function ProtectedExpenseEditor({
     setPendingRemoval({
       kind: "row",
       rowId,
-      rowReference: formatExpenseLineReference(expenseCode, rowNumber),
+      rowReference: formatExpenseLineReferenceCode(expenseDate, rowNumber),
     });
   };
 
@@ -850,7 +851,7 @@ function ProtectedExpenseEditor({
       receiptId: receipt.id,
       receiptName: receipt.name,
       rowId,
-      rowReference: formatExpenseLineReference(expenseCode, rowNumber),
+      rowReference: formatExpenseLineReferenceCode(expenseDate, rowNumber),
     });
   };
 
@@ -964,7 +965,7 @@ function ProtectedExpenseEditor({
                       {expenseDate}
                     </Badge>
                     <Badge className="rounded-full px-3 py-1" variant="outline">
-                      {expenseCode || "Reference pending"}
+                      {displayExpenseReference}
                     </Badge>
                   </div>
 
@@ -1020,7 +1021,7 @@ function ProtectedExpenseEditor({
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
                   <EditorMetric
                     label="Reference"
-                    value={expenseCode || "Pending first save"}
+                    value={displayExpenseReference}
                     icon={<Hash className="size-4" />}
                   />
                   <EditorMetric
@@ -1121,7 +1122,7 @@ function ProtectedExpenseEditor({
 
                     {rows.map((row) => {
                       const rowNumber = rowNumberById.get(row.id) ?? row.id;
-                      const rowReference = formatExpenseLineReference(expenseCode, rowNumber);
+                      const rowReference = formatExpenseLineReferenceCode(expenseDate, rowNumber);
 
                       return (
                         <article
@@ -1579,7 +1580,7 @@ function ProtectedExpenseEditor({
               />
               <InfoLine
                 label={exportCopy.reference}
-                value={expenseCode || "Pending first save"}
+                value={displayExpenseReference}
               />
             </div>
 
@@ -1623,7 +1624,7 @@ function ProtectedExpenseEditor({
                     style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
                   >
                     <div className="border-r border-b border-black/25 px-2 py-2 text-[8px] font-semibold leading-[0.95rem] [overflow-wrap:anywhere]">
-                      {formatExpenseLineReference(expenseCode, lineNumber)}
+                      {formatExpenseLineReferenceCode(expenseDate, lineNumber)}
                     </div>
                     <div className="border-r border-b border-black/25 px-2 py-2">
                       <p className="line-clamp-2 font-medium leading-[1.15rem]">
@@ -1798,17 +1799,6 @@ function formatExportDate(value: string, language: ExportLanguage) {
   return new Intl.DateTimeFormat(language === "th" ? "th-TH" : "en-GB", {
     dateStyle: "long",
   }).format(parsedDate);
-}
-
-function formatExpenseLineReference(expenseCode: string, lineNumber: number) {
-  const normalizedLineNumber = Number.isFinite(lineNumber) ? Math.max(1, lineNumber) : 1;
-  const lineSequence = String(normalizedLineNumber).padStart(2, "0");
-
-  if (!expenseCode) {
-    return `DRAFT-${lineSequence}`;
-  }
-
-  return `${expenseCode}-${lineSequence}`;
 }
 
 function formatExportExpenseTypeLabel(typeId: string, language: ExportLanguage) {
