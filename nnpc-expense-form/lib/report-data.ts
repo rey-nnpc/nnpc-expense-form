@@ -18,6 +18,7 @@ import {
 
 type ExpenseSummaryRow = {
   expense_date: string;
+  expense_code: string | null;
   total_amount_thb: number | string;
 };
 
@@ -41,6 +42,7 @@ type ExpenseItemRow = {
 
 type ExpenseReportRow = {
   id: string;
+  expense_code: string | null;
   company_id: string | null;
   company_name: string | null;
   company_logo_data_url: string | null;
@@ -54,6 +56,7 @@ type ExpenseReportRow = {
 
 export type ExpenseDayDocument = {
   reportId: string;
+  expenseCode: string;
   companyId: string;
   companyName: string;
   companyLogoBucketName: string;
@@ -161,13 +164,14 @@ async function materializeReceipts({
 export async function listExpenseSummaries(accessToken: string) {
   const rows = await supabaseJsonRequest<ExpenseSummaryRow[]>({
     accessToken,
-    path: "expense_reports?select=expense_date,total_amount_thb&order=expense_date.desc",
+    path: "expense_reports?select=expense_date,expense_code,total_amount_thb&order=expense_date.desc",
   });
 
   return rows.map(
     (row) =>
       ({
         date: row.expense_date,
+        expenseCode: row.expense_code ?? "",
         totalAmount: Number(row.total_amount_thb),
       }) satisfies ExpenseSummary,
   );
@@ -176,7 +180,7 @@ export async function listExpenseSummaries(accessToken: string) {
 export async function getExpenseDay(accessToken: string, expenseDate: string) {
   const rows = await supabaseJsonRequest<ExpenseReportRow[]>({
     accessToken,
-    path: `expense_reports?select=id,company_id,company_name,company_logo_data_url,company_logo_bucket_name,company_logo_object_path,export_language,employee_name,note,expense_items(id,expense_type_label,amount_thb,remark,line_number,expense_receipts(id,bucket_name,object_path,original_file_name,mime_type,file_size_bytes))&expense_date=eq.${expenseDate}&limit=1`,
+    path: `expense_reports?select=id,expense_code,company_id,company_name,company_logo_data_url,company_logo_bucket_name,company_logo_object_path,export_language,employee_name,note,expense_items(id,expense_type_label,amount_thb,remark,line_number,expense_receipts(id,bucket_name,object_path,original_file_name,mime_type,file_size_bytes))&expense_date=eq.${expenseDate}&limit=1`,
   });
 
   const [report] = rows;
@@ -193,6 +197,7 @@ export async function getExpenseDay(accessToken: string, expenseDate: string) {
 
   return {
     reportId: report.id,
+    expenseCode: report.expense_code ?? "",
     companyId: report.company_id ?? "",
     companyName: report.company_name ?? "",
     companyLogoBucketName,
@@ -242,7 +247,10 @@ export async function upsertExpenseDay({
 
   const persistedRows = materializedRows.filter(hasRowContent);
 
-  const reportId = await supabaseRpcRequest<string>({
+  const report = await supabaseRpcRequest<{
+    expense_code: string;
+    report_id: string;
+  }>({
     accessToken,
     args: {
       p_company_id: companyId || null,
@@ -274,7 +282,8 @@ export async function upsertExpenseDay({
 
   return {
     didUpload,
-    reportId,
+    expenseCode: report.expense_code,
+    reportId: report.report_id,
     rows: didUpload
       ? materializedRows.map((row) => ({
           ...row,

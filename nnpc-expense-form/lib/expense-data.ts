@@ -29,6 +29,7 @@ export type ExpenseRow = {
 
 export type ExpenseSummary = {
   date: string;
+  expenseCode: string;
   totalAmount: number;
 };
 

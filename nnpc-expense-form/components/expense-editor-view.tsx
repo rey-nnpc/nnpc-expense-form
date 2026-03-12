@@ -20,6 +20,7 @@ import {
   CloudUpload,
   FileText,
   Globe2,
+  Hash,
   ImagePlus,
   LoaderCircle,
   LogOut,
@@ -103,6 +104,7 @@ const EMPTY_COMPANY_VALUE = "__none__";
 const PRIMARY_EXPORT_ROW_LIMIT = 6;
 const RECEIPTS_PER_PAGE = 4;
 const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
+const PRINT_TABLE_GRID_TEMPLATE = "1.6fr 1.75fr 2.95fr 1.25fr";
 
 const EXPORT_COPY: Record<
   ExportLanguage,
@@ -113,6 +115,7 @@ const EXPORT_COPY: Record<
     companyPending: string;
     date: string;
     employee: string;
+    reference: string;
     note: string;
     line: string;
     expenseType: string;
@@ -136,6 +139,7 @@ const EXPORT_COPY: Record<
     companyPending: "Select a company in Company Headers",
     date: "Date",
     employee: "Employee",
+    reference: "Reference",
     note: "Note",
     line: "No.",
     expenseType: "Expense type",
@@ -158,6 +162,7 @@ const EXPORT_COPY: Record<
     companyPending: "กรุณาเลือกบริษัทจากแท็บ Company Headers",
     date: "วันที่",
     employee: "ชื่อผู้เบิก",
+    reference: "เลขอ้างอิง",
     note: "หมายเหตุ",
     line: "ลำดับ",
     expenseType: "ประเภทค่าใช้จ่าย",
@@ -189,12 +194,12 @@ type PendingRemoval =
       receiptId: string;
       receiptName: string;
       rowId: number;
-      rowNumber: number;
+      rowReference: string;
     }
   | {
       kind: "row";
       rowId: number;
-      rowNumber: number;
+      rowReference: string;
     };
 
 export default function ExpenseEditorView({
@@ -357,6 +362,7 @@ function ProtectedExpenseEditor({
   const [loadedCompanyLogoBucketName, setLoadedCompanyLogoBucketName] = useState("");
   const [loadedCompanyLogoObjectPath, setLoadedCompanyLogoObjectPath] = useState("");
   const [loadedCompanyLogoUrl, setLoadedCompanyLogoUrl] = useState("");
+  const [expenseCode, setExpenseCode] = useState("");
   const [exportLanguage, setExportLanguage] = useState<ExportLanguage>("en");
   const [note, setNote] = useState("");
   const [rows, setRows] = useState<ExpenseRow[]>([]);
@@ -400,6 +406,7 @@ function ProtectedExpenseEditor({
       setLoadedCompanyLogoBucketName("");
       setLoadedCompanyLogoObjectPath("");
       setLoadedCompanyLogoUrl("");
+      setExpenseCode("");
       setExportLanguage("en");
       setNote("");
       setRows([]);
@@ -411,6 +418,7 @@ function ProtectedExpenseEditor({
       setLoadedCompanyLogoBucketName(existingReport.companyLogoBucketName);
       setLoadedCompanyLogoObjectPath(existingReport.companyLogoObjectPath);
       setLoadedCompanyLogoUrl(existingReport.companyLogoUrl);
+      setExpenseCode(existingReport.expenseCode);
       setExportLanguage(existingReport.exportLanguage);
       setNote(existingReport.note);
       setRows(buildRowsFromLoadedReport(existingReport.rows));
@@ -524,6 +532,7 @@ function ProtectedExpenseEditor({
       });
 
       setSaveError(null);
+      setExpenseCode(saveResult.expenseCode);
       setLastSavedAt(
         new Intl.DateTimeFormat("en-US", {
           dateStyle: "medium",
@@ -555,11 +564,13 @@ function ProtectedExpenseEditor({
         employeeName: nextSnapshot.employeeName,
         exportLanguage: nextSnapshot.exportLanguage,
         note: nextSnapshot.note,
-        reportId: "",
+        expenseCode: saveResult.expenseCode,
+        reportId: saveResult.reportId,
         rows: persistedRows,
       });
       upsertExpenseSummaryCache(cacheUserKey, {
         date: expenseDate,
+        expenseCode: saveResult.expenseCode,
         totalAmount: persistedRows.reduce((sum, row) => sum + parseAmount(row.amount), 0),
       });
 
@@ -650,7 +661,7 @@ function ProtectedExpenseEditor({
   const printableReceipts = populatedRowsWithLineNumbers.flatMap(({ lineNumber, row }) =>
     row.receipts.map((receipt, receiptIndex) => ({
       key: `${row.id}-${receipt.id}`,
-      label: `${exportCopy.receiptLabel} - ${exportCopy.expenseLabel} ${String(lineNumber).padStart(2, "0")}${
+      label: `${exportCopy.receiptLabel} - ${formatExpenseLineReference(expenseCode, lineNumber)}${
         row.receipts.length > 1 ? `.${receiptIndex + 1}` : ""
       }`,
       lineNumber,
@@ -822,20 +833,24 @@ function ProtectedExpenseEditor({
   };
 
   const requestRowRemoval = (rowId: number) => {
+    const rowNumber = rowNumberById.get(rowId) ?? rowId;
+
     setPendingRemoval({
       kind: "row",
       rowId,
-      rowNumber: rowNumberById.get(rowId) ?? rowId,
+      rowReference: formatExpenseLineReference(expenseCode, rowNumber),
     });
   };
 
   const requestReceiptRemoval = (rowId: number, receipt: ReceiptDraft) => {
+    const rowNumber = rowNumberById.get(rowId) ?? rowId;
+
     setPendingRemoval({
       kind: "receipt",
       receiptId: receipt.id,
       receiptName: receipt.name,
       rowId,
-      rowNumber: rowNumberById.get(rowId) ?? rowId,
+      rowReference: formatExpenseLineReference(expenseCode, rowNumber),
     });
   };
 
@@ -948,6 +963,9 @@ function ProtectedExpenseEditor({
                     <Badge className="rounded-full px-3 py-1" variant="secondary">
                       {expenseDate}
                     </Badge>
+                    <Badge className="rounded-full px-3 py-1" variant="outline">
+                      {expenseCode || "Reference pending"}
+                    </Badge>
                   </div>
 
                   <div className="space-y-3">
@@ -999,7 +1017,12 @@ function ProtectedExpenseEditor({
               </div>
 
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                  <EditorMetric
+                    label="Reference"
+                    value={expenseCode || "Pending first save"}
+                    icon={<Hash className="size-4" />}
+                  />
                   <EditorMetric
                     label="Employee"
                     value={employeeName || deriveDisplayName(session.userEmail)}
@@ -1098,6 +1121,7 @@ function ProtectedExpenseEditor({
 
                     {rows.map((row) => {
                       const rowNumber = rowNumberById.get(row.id) ?? row.id;
+                      const rowReference = formatExpenseLineReference(expenseCode, rowNumber);
 
                       return (
                         <article
@@ -1115,7 +1139,7 @@ function ProtectedExpenseEditor({
                                   {findExpenseTypeLabel(row.typeId)}
                                 </Badge>
                                 <Badge className="rounded-full px-3 py-1" variant="outline">
-                                  Expense {rowNumber}
+                                  {rowReference}
                                 </Badge>
                                 {row.receipts.length > 0 ? (
                                   <Badge className="rounded-full px-3 py-1" variant="outline">
@@ -1265,7 +1289,7 @@ function ProtectedExpenseEditor({
                               {row.receipts.length > 0 && row.isReceiptPreviewOpen ? (
                                 <ReceiptPreviewGrid
                                   receipts={row.receipts}
-                                  rowNumber={rowNumber}
+                                  rowReference={rowReference}
                                   onRemoveReceipt={(receipt) =>
                                     requestReceiptRemoval(row.id, receipt)
                                   }
@@ -1553,6 +1577,10 @@ function ProtectedExpenseEditor({
                 label={exportCopy.employee}
                 value={employeeName || deriveDisplayName(session.userEmail)}
               />
+              <InfoLine
+                label={exportCopy.reference}
+                value={expenseCode || "Pending first save"}
+              />
             </div>
 
             <div className="mt-2.5 border-b border-black/15 pb-2">
@@ -1570,7 +1598,10 @@ function ProtectedExpenseEditor({
               </div>
             ) : (
               <div className="mt-3 overflow-hidden border border-black/40">
-                <div className="grid grid-cols-[0.7fr_1.85fr_3.15fr_1.35fr] bg-black/[0.035] text-[9px] font-semibold uppercase tracking-[0.12em] text-black/85">
+                <div
+                  className="grid bg-black/[0.035] text-[9px] font-semibold uppercase tracking-[0.12em] text-black/85"
+                  style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
+                >
                   <div className="border-r border-b border-black/35 px-2 py-1.5">
                     {exportCopy.line}
                   </div>
@@ -1587,11 +1618,12 @@ function ProtectedExpenseEditor({
 
                 {printableFormRows.map(({ lineNumber, row }) => (
                   <div
-                    className="grid grid-cols-[0.7fr_1.85fr_3.15fr_1.35fr] text-[11px] text-black"
+                    className="grid text-[11px] text-black"
                     key={row.id}
+                    style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
                   >
-                    <div className="border-r border-b border-black/25 px-2 py-2 text-center font-medium">
-                      {lineNumber}
+                    <div className="border-r border-b border-black/25 px-2 py-2 text-[8px] font-semibold leading-[0.95rem] [overflow-wrap:anywhere]">
+                      {formatExpenseLineReference(expenseCode, lineNumber)}
                     </div>
                     <div className="border-r border-b border-black/25 px-2 py-2">
                       <p className="line-clamp-2 font-medium leading-[1.15rem]">
@@ -1733,9 +1765,9 @@ function ProtectedExpenseEditor({
               </AlertDialogTitle>
               <AlertDialogDescription className="leading-7">
                 {pendingRemoval?.kind === "receipt"
-                  ? `This will remove "${pendingRemoval.receiptName}" from expense ${pendingRemoval.rowNumber}.`
+                  ? `This will remove "${pendingRemoval.receiptName}" from ${pendingRemoval.rowReference}.`
                   : pendingRemoval
-                    ? `This will remove expense ${pendingRemoval.rowNumber} and all of its receipt photos.`
+                    ? `This will remove ${pendingRemoval.rowReference} and all of its receipt photos.`
                     : "This action cannot be undone on this page."}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -1766,6 +1798,17 @@ function formatExportDate(value: string, language: ExportLanguage) {
   return new Intl.DateTimeFormat(language === "th" ? "th-TH" : "en-GB", {
     dateStyle: "long",
   }).format(parsedDate);
+}
+
+function formatExpenseLineReference(expenseCode: string, lineNumber: number) {
+  const normalizedLineNumber = Number.isFinite(lineNumber) ? Math.max(1, lineNumber) : 1;
+  const lineSequence = String(normalizedLineNumber).padStart(2, "0");
+
+  if (!expenseCode) {
+    return `DRAFT-${lineSequence}`;
+  }
+
+  return `${expenseCode}-${lineSequence}`;
 }
 
 function formatExportExpenseTypeLabel(typeId: string, language: ExportLanguage) {
@@ -1930,17 +1973,17 @@ function InfoLine({
 function ReceiptPreviewGrid({
   onRemoveReceipt,
   receipts,
-  rowNumber,
+  rowReference,
 }: {
   onRemoveReceipt: (receipt: ReceiptDraft) => void;
   receipts: ReceiptDraft[];
-  rowNumber: number;
+  rowReference: string;
 }) {
   return (
     <div className="rounded-[1.6rem] border border-white/10 bg-background/60 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-sm font-medium text-foreground">Receipt photos for expense {rowNumber}</p>
+          <p className="text-sm font-medium text-foreground">Receipt photos for {rowReference}</p>
           <p className="text-xs text-muted-foreground">
             Remove any photo you no longer want on the export.
           </p>

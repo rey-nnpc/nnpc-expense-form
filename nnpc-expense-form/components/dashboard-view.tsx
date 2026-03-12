@@ -153,8 +153,9 @@ function ProtectedDashboard({
 
         <Card className="mt-4 rounded-[1.75rem] border-border/60 py-0 shadow-none">
           <CardContent className="px-0 py-0">
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border/60 px-4 py-3 text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground sm:px-5">
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-4 border-b border-border/60 px-4 py-3 text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground sm:px-5">
               <span>Date</span>
+              <span>Reference</span>
               <span>Total</span>
             </div>
 
@@ -174,12 +175,15 @@ function ProtectedDashboard({
               <div>
                 {summaries.map((summary) => (
                   <Link
-                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-border/50 px-4 py-4 text-sm transition last:border-b-0 hover:bg-accent/40 sm:px-5"
+                    className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-4 border-b border-border/50 px-4 py-4 text-sm transition last:border-b-0 hover:bg-accent/40 sm:px-5"
                     href={`/expense?date=${encodeURIComponent(summary.date)}`}
                     key={summary.date}
                   >
                     <span className="min-w-0 truncate font-medium text-foreground">
                       {formatDisplayDate(summary.date)}
+                    </span>
+                    <span className="min-w-0 truncate text-muted-foreground">
+                      {summary.expenseCode || "Pending"}
                     </span>
                     <span className="text-foreground">
                       {formatCurrency(summary.totalAmount)}
