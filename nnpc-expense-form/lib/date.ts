@@ -44,7 +44,16 @@ export function formatDisplayDate(value: string) {
   }).format(parsedDate);
 }
 
-export function formatExpenseReferenceCode(value: string) {
+export function formatExpenseReferenceCode(
+  value: string,
+  persistedCode?: string | null,
+) {
+  const trimmedCode = persistedCode?.trim();
+
+  if (trimmedCode) {
+    return trimmedCode;
+  }
+
   if (!isIsoDateValue(value)) {
     return "EXP";
   }
@@ -60,10 +69,14 @@ export function formatExpenseReferenceCode(value: string) {
   return `EXP-${day}${monthCode}${year}`;
 }
 
-export function formatExpenseLineReferenceCode(value: string, lineNumber: number) {
+export function formatExpenseLineReferenceCode(
+  value: string,
+  lineNumber: number,
+  persistedCode?: string | null,
+) {
   const normalizedLineNumber = Number.isFinite(lineNumber) ? Math.max(1, lineNumber) : 1;
 
-  return `${formatExpenseReferenceCode(value)}-${String(normalizedLineNumber).padStart(2, "0")}`;
+  return `${formatExpenseReferenceCode(value, persistedCode)}-${String(normalizedLineNumber).padStart(2, "0")}`;
 }
 
 export function isIsoDateValue(value: string) {

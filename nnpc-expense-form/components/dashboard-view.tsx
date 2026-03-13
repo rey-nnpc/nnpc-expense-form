@@ -187,7 +187,7 @@ function ProtectedDashboard({
                       {formatDisplayDate(summary.date)}
                     </span>
                     <span className="min-w-0 truncate text-muted-foreground">
-                      {formatExpenseReferenceCode(summary.date)}
+                      {formatExpenseReferenceCode(summary.date, summary.expenseCode)}
                     </span>
                     <span className="text-foreground">
                       {formatCurrency(summary.totalAmount)}
