@@ -105,7 +105,7 @@ import {
 import { buildPublicStorageUrl } from "../lib/supabase-api";
 
 const EMPTY_COMPANY_VALUE = "__none__";
-const PRIMARY_EXPORT_ROW_LIMIT = 6;
+const EXPORT_FORM_ROWS_PER_PAGE = 10;
 const RECEIPTS_PER_PAGE = 4;
 const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
 const PRINT_TABLE_GRID_TEMPLATE = "1.6fr 1.75fr 2.95fr 1.25fr";
@@ -205,6 +205,21 @@ type PendingRemoval =
       rowId: number;
       rowReference: string;
     };
+
+type PrintableFormRow = {
+  lineNumber: number;
+  row: ExpenseRow;
+};
+
+type PrintableReceiptEntry = {
+  key: string;
+  label: string;
+  lineNumber: number;
+  receipt: ReceiptDraft;
+  row: ExpenseRow;
+};
+
+type ExportCopy = (typeof EXPORT_COPY)[ExportLanguage];
 
 export default function ExpenseEditorView({
   expenseDate,
@@ -645,21 +660,32 @@ function ProtectedExpenseEditor({
 
   const rowNumberById = new Map(rows.map((row, index) => [row.id, index + 1]));
   const populatedRows = rows.filter(hasRowContent);
-  const populatedRowsWithLineNumbers = populatedRows.map((row, index) => ({
+  const populatedRowsWithLineNumbers: PrintableFormRow[] = populatedRows.map((row, index) => ({
     lineNumber: index + 1,
     row,
   }));
   const displayExpenseReference = formatExpenseReferenceCode(expenseDate);
+  const printableEmployeeName = employeeName || defaultEmployeeName;
   const totalAmount = rows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const totalReceipts = rows.reduce((sum, row) => sum + row.receipts.length, 0);
   const exportCopy = EXPORT_COPY[exportLanguage];
-  const printableFormRows = populatedRowsWithLineNumbers.slice(0, PRIMARY_EXPORT_ROW_LIMIT);
-  const overflowRows = populatedRowsWithLineNumbers.slice(PRIMARY_EXPORT_ROW_LIMIT);
-  const overflowAmount = overflowRows.reduce(
-    (sum, entry) => sum + parseAmount(entry.row.amount),
-    0,
-  );
-  const printableReceipts = populatedRowsWithLineNumbers.flatMap(({ lineNumber, row }) =>
+  const printableFormPages =
+    populatedRowsWithLineNumbers.length > 0
+      ? chunkEntries(populatedRowsWithLineNumbers, EXPORT_FORM_ROWS_PER_PAGE)
+      : [populatedRowsWithLineNumbers];
+  const exportValidationMessage =
+    !selectedCompanyId
+      ? companies.length === 0
+        ? "Add a company profile with a logo in Company Headers before exporting."
+        : "Select a company profile before exporting."
+      : !selectedCompanyName.trim()
+        ? "The selected company profile is missing a company name."
+        : !selectedCompanyLogoUrl
+          ? "The selected company profile is missing a logo. Update it in Company Headers before exporting."
+          : null;
+  const canExport = exportValidationMessage === null;
+  const printableReceipts: PrintableReceiptEntry[] = populatedRowsWithLineNumbers.flatMap(
+    ({ lineNumber, row }) =>
     row.receipts.map((receipt, receiptIndex) => ({
       key: `${row.id}-${receipt.id}`,
       label: `${exportCopy.receiptLabel} - ${formatExpenseLineReferenceCode(expenseDate, lineNumber)}${
@@ -874,6 +900,13 @@ function ProtectedExpenseEditor({
       return;
     }
 
+    if (!canExport) {
+      setPrintError(
+        exportValidationMessage ?? "Select a company profile with a logo before exporting.",
+      );
+      return;
+    }
+
     setPrintError(null);
     setIsPreparingPrint(true);
 
@@ -987,7 +1020,7 @@ function ProtectedExpenseEditor({
                   <ThemeSettingsSheet userEmail={session.userEmail} />
                   <Button
                     className="rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90"
-                    disabled={isPreparingPrint}
+                    disabled={isPreparingPrint || !canExport}
                     size="sm"
                     type="button"
                     variant="outline"
@@ -1026,7 +1059,7 @@ function ProtectedExpenseEditor({
                   />
                   <EditorMetric
                     label="Employee"
-                    value={employeeName || deriveDisplayName(session.userEmail)}
+                    value={printableEmployeeName}
                     icon={<UserRound className="size-4" />}
                   />
                   <EditorMetric
@@ -1316,7 +1349,7 @@ function ProtectedExpenseEditor({
                     Company and form details
                   </CardTitle>
                   <CardDescription className="text-sm leading-7">
-                    These details appear across the full printed form.
+                    These details appear across every printed form page.
                   </CardDescription>
                 </CardHeader>
 
@@ -1326,7 +1359,7 @@ function ProtectedExpenseEditor({
                       Company for this form
                     </span>
                     <Select
-                      disabled={companies.length === 0}
+                      disabled={companies.length === 0 && !selectedCompanyId}
                       value={selectedCompanyId || EMPTY_COMPANY_VALUE}
                       onValueChange={handleCompanySelect}
                     >
@@ -1347,6 +1380,15 @@ function ProtectedExpenseEditor({
                         ))}
                       </SelectContent>
                     </Select>
+                    {exportValidationMessage ? (
+                      <p className="text-sm leading-6 text-destructive">
+                        {exportValidationMessage}
+                      </p>
+                    ) : (
+                      <p className="text-xs leading-6 text-muted-foreground">
+                        The selected company name and logo print on every export page.
+                      </p>
+                    )}
                   </label>
 
                   <div className="rounded-3xl border border-white/10 bg-background/65 p-4">
@@ -1380,10 +1422,10 @@ function ProtectedExpenseEditor({
                     </div>
                   </div>
 
-                  {companies.length === 0 ? (
+                  {companies.length === 0 && !selectedCompanyId ? (
                     <div className="rounded-3xl border border-dashed border-white/10 bg-background/60 px-4 py-4 text-sm text-muted-foreground">
-                      Add a company in Company Headers if you want the printed form to
-                      include a branded header.
+                      Add a company in Company Headers before exporting. A saved logo is
+                      required for the printed header.
                     </div>
                   ) : null}
 
@@ -1492,15 +1534,16 @@ function ProtectedExpenseEditor({
                         <Globe2 className="size-4" />
                       </span>
                       <p className="text-sm leading-7 text-foreground">
-                        The printed form stays on one signature page, then adds up to four
-                        receipt photos on each extra page.
+                        The printed form fits up to ten expense lines per page, keeps the
+                        same layout on continuation pages, and adds up to four receipt
+                        photos on each extra page.
                       </p>
                     </div>
                   </div>
 
                   <Button
                     className="h-11 w-full rounded-2xl"
-                    disabled={isPreparingPrint}
+                    disabled={isPreparingPrint || !canExport}
                     type="button"
                     onClick={() => {
                       void handlePrint();
@@ -1537,144 +1580,24 @@ function ProtectedExpenseEditor({
           </main>
         </section>
 
-        <section className="print-only print-card print-sheet rounded-none bg-white p-3 text-black">
-          <div className="p-0">
-            <div className="flex items-start gap-3 border-b border-black/25 pb-3">
-              <div className="flex h-[4.5rem] w-[4.5rem] shrink-0 items-center justify-center overflow-hidden rounded-[0.85rem]">
-                {selectedCompanyLogoUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element -- eager loading keeps the logo available during print export.
-                  <img
-                    alt={selectedCompanyName || exportCopy.companyPending}
-                    className="h-full w-full object-contain"
-                    decoding="sync"
-                    loading="eager"
-                    src={selectedCompanyLogoUrl}
-                  />
-                ) : (
-                  <span className="text-[11px] font-medium uppercase tracking-[0.24em] text-black/45">
-                    Logo
-                  </span>
-                )}
-              </div>
-
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
-                  {exportCopy.companyCaption}
-                </p>
-                <h2 className="mt-1 line-clamp-2 font-serif text-[1.22rem] leading-tight">
-                  {selectedCompanyName || exportCopy.companyPending}
-                </h2>
-                <p className="mt-1 text-[12px] text-black/65">{exportCopy.formSubtitle}</p>
-                <p className="mt-1.5 text-[14px] font-semibold">{exportCopy.formTitle}</p>
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-              <InfoLine
-                label={exportCopy.date}
-                value={formatExportDate(expenseDate, exportLanguage)}
-              />
-              <InfoLine
-                label={exportCopy.employee}
-                value={employeeName || deriveDisplayName(session.userEmail)}
-              />
-              <InfoLine
-                label={exportCopy.reference}
-                value={displayExpenseReference}
-              />
-            </div>
-
-            <div className="mt-2.5 border-b border-black/15 pb-2">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-black/55">
-                {exportCopy.note}
-              </p>
-              <p className="mt-1 line-clamp-2 text-[12px] leading-5">
-                {note || exportCopy.noteFallback}
-              </p>
-            </div>
-
-            {populatedRows.length === 0 ? (
-              <div className="mt-3 px-1 py-2 text-sm text-black/60">
-                {exportCopy.noExpenses}
-              </div>
-            ) : (
-              <div className="mt-3 overflow-hidden border border-black/40">
-                <div
-                  className="grid bg-black/[0.035] text-[9px] font-semibold uppercase tracking-[0.12em] text-black/85"
-                  style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
-                >
-                  <div className="border-r border-b border-black/35 px-2 py-1.5">
-                    {exportCopy.line}
-                  </div>
-                  <div className="border-r border-b border-black/35 px-2 py-1.5">
-                    {exportCopy.expenseType}
-                  </div>
-                  <div className="border-r border-b border-black/35 px-2 py-1.5">
-                    {exportCopy.expenseNote}
-                  </div>
-                  <div className="border-b border-black/35 px-2 py-1.5 text-right">
-                    {exportCopy.amount}
-                  </div>
-                </div>
-
-                {printableFormRows.map(({ lineNumber, row }) => (
-                  <div
-                    className="grid text-[11px] text-black"
-                    key={row.id}
-                    style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
-                  >
-                    <div className="border-r border-b border-black/25 px-2 py-2 text-[8px] font-semibold leading-[0.95rem] [overflow-wrap:anywhere]">
-                      {formatExpenseLineReferenceCode(expenseDate, lineNumber)}
-                    </div>
-                    <div className="border-r border-b border-black/25 px-2 py-2">
-                      <p className="line-clamp-2 font-medium leading-[1.15rem]">
-                        {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
-                      </p>
-                    </div>
-                    <div className="border-r border-b border-black/25 px-2 py-2">
-                      <p className="line-clamp-2 leading-[1.15rem] text-black/78">
-                        {row.remark || exportCopy.emptyRemark}
-                      </p>
-                    </div>
-                    <div className="border-b border-black/25 px-2 py-2 text-right font-medium">
-                      {row.amount.trim()
-                        ? formatPrintAmount(parseAmount(row.amount), exportLanguage)
-                        : "-"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {overflowRows.length > 0 ? (
-              <div className="mt-2 px-0.5 text-[10px] leading-[1.125rem] text-black/75">
-                <span className="font-medium">
-                  {formatOverflowRowsSummary(overflowRows.length, exportLanguage)}
-                </span>
-                <span className="ml-2 font-semibold">
-                  {formatPrintAmount(overflowAmount, exportLanguage)}
-                </span>
-              </div>
-            ) : null}
-
-            <div className="mt-2.5 flex items-center justify-end border-t border-black/25 px-0.5 py-2 text-[12px]">
-              <span className="font-medium">{exportCopy.total}:</span>
-              <span className="ml-3 text-sm font-semibold">
-                {formatPrintAmount(totalAmount, exportLanguage)}
-              </span>
-            </div>
-
-            <div className="mt-5 grid grid-cols-3 gap-3 text-[10px]">
-              {exportCopy.signatures.map((label) => (
-                <div className="text-center" key={label}>
-                  <p className="font-semibold tracking-[0.02em]">{exportCopy.signatureHint}</p>
-                  <div className="mt-7 border-b border-black/75" />
-                  <p className="mt-2 text-black/80">{label}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
+        {printableFormPages.map((pageRows, pageIndex) => (
+          <PrintExpenseFormPage
+            currentPage={pageIndex + 1}
+            displayExpenseReference={displayExpenseReference}
+            employeeName={printableEmployeeName}
+            expenseDate={expenseDate}
+            exportCopy={exportCopy}
+            exportLanguage={exportLanguage}
+            key={`form-page-${pageIndex + 1}`}
+            note={note}
+            rows={pageRows}
+            selectedCompanyLogoUrl={selectedCompanyLogoUrl}
+            selectedCompanyName={selectedCompanyName}
+            showFooter={pageIndex === printableFormPages.length - 1}
+            totalAmount={totalAmount}
+            totalPages={printableFormPages.length}
+          />
+        ))}
 
         {receiptPages.map((pageEntries, pageIndex) => (
           <section
@@ -1789,6 +1712,175 @@ function ProtectedExpenseEditor({
   );
 }
 
+function PrintExpenseFormPage({
+  currentPage,
+  displayExpenseReference,
+  employeeName,
+  expenseDate,
+  exportCopy,
+  exportLanguage,
+  note,
+  rows,
+  selectedCompanyLogoUrl,
+  selectedCompanyName,
+  showFooter,
+  totalAmount,
+  totalPages,
+}: {
+  currentPage: number;
+  displayExpenseReference: string;
+  employeeName: string;
+  expenseDate: string;
+  exportCopy: ExportCopy;
+  exportLanguage: ExportLanguage;
+  note: string;
+  rows: PrintableFormRow[];
+  selectedCompanyLogoUrl: string;
+  selectedCompanyName: string;
+  showFooter: boolean;
+  totalAmount: number;
+  totalPages: number;
+}) {
+  return (
+    <section
+      className="print-only print-card print-sheet rounded-none bg-white px-2.5 py-2.5 text-black"
+      style={currentPage > 1 ? { breakBefore: "page" } : undefined}
+    >
+      <div className="p-0">
+        <div className="flex items-start gap-3 border-b border-black/25 pb-2.5">
+          <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[0.85rem]">
+            {selectedCompanyLogoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- eager loading keeps the logo available during print export.
+              <img
+                alt={selectedCompanyName || exportCopy.companyPending}
+                className="h-full w-full object-contain"
+                decoding="sync"
+                loading="eager"
+                src={selectedCompanyLogoUrl}
+              />
+            ) : (
+              <span className="text-[11px] font-medium uppercase tracking-[0.24em] text-black/45">
+                Logo
+              </span>
+            )}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
+                  {exportCopy.companyCaption}
+                </p>
+                <h2 className="mt-1 line-clamp-2 font-serif text-[1.14rem] leading-tight">
+                  {selectedCompanyName || exportCopy.companyPending}
+                </h2>
+                <p className="mt-0.5 text-[11px] text-black/65">{exportCopy.formSubtitle}</p>
+                <p className="mt-1 text-[13px] font-semibold">{exportCopy.formTitle}</p>
+              </div>
+
+              {totalPages > 1 ? (
+                <p className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.18em] text-black/55">
+                  {formatFormPageCounter(currentPage, totalPages, exportLanguage)}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-2.5 grid grid-cols-2 gap-2.5 text-sm">
+          <InfoLine
+            label={exportCopy.date}
+            value={formatExportDate(expenseDate, exportLanguage)}
+          />
+          <InfoLine label={exportCopy.employee} value={employeeName} />
+          <InfoLine label={exportCopy.reference} value={displayExpenseReference} />
+        </div>
+
+        <div className="mt-2 border-b border-black/15 pb-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-black/55">
+            {exportCopy.note}
+          </p>
+          <p className="mt-1 line-clamp-2 text-[11px] leading-[1.05rem]">
+            {note || exportCopy.noteFallback}
+          </p>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="mt-2.5 px-1 py-2 text-sm text-black/60">{exportCopy.noExpenses}</div>
+        ) : (
+          <div className="mt-2.5 overflow-hidden border border-black/40">
+            <div
+              className="grid bg-black/[0.035] text-[8px] font-semibold uppercase tracking-[0.12em] text-black/85"
+              style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
+            >
+              <div className="border-r border-b border-black/35 px-2 py-1.5">
+                {exportCopy.line}
+              </div>
+              <div className="border-r border-b border-black/35 px-2 py-1.5">
+                {exportCopy.expenseType}
+              </div>
+              <div className="border-r border-b border-black/35 px-2 py-1.5">
+                {exportCopy.expenseNote}
+              </div>
+              <div className="border-b border-black/35 px-2 py-1.5 text-right">
+                {exportCopy.amount}
+              </div>
+            </div>
+
+            {rows.map(({ lineNumber, row }) => (
+              <div
+                className="grid text-[10px] text-black"
+                key={row.id}
+                style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
+              >
+                <div className="border-r border-b border-black/25 px-2 py-1.5 text-[8px] font-semibold leading-[0.92rem] [overflow-wrap:anywhere]">
+                  {formatExpenseLineReferenceCode(expenseDate, lineNumber)}
+                </div>
+                <div className="border-r border-b border-black/25 px-2 py-1.5">
+                  <p className="line-clamp-2 font-medium leading-[1rem]">
+                    {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
+                  </p>
+                </div>
+                <div className="border-r border-b border-black/25 px-2 py-1.5">
+                  <p className="line-clamp-2 leading-[1rem] text-black/78">
+                    {row.remark || exportCopy.emptyRemark}
+                  </p>
+                </div>
+                <div className="border-b border-black/25 px-2 py-1.5 text-right font-medium">
+                  {row.amount.trim()
+                    ? formatPrintAmount(parseAmount(row.amount), exportLanguage)
+                    : "-"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {showFooter ? (
+          <>
+            <div className="mt-2 flex items-center justify-end border-t border-black/25 px-0.5 py-1.5 text-[12px]">
+              <span className="font-medium">{exportCopy.total}:</span>
+              <span className="ml-3 text-sm font-semibold">
+                {formatPrintAmount(totalAmount, exportLanguage)}
+              </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-3 text-[9px]">
+              {exportCopy.signatures.map((label) => (
+                <div className="text-center" key={label}>
+                  <p className="font-semibold tracking-[0.02em]">{exportCopy.signatureHint}</p>
+                  <div className="mt-5 border-b border-black/75" />
+                  <p className="mt-2 text-black/80">{label}</p>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function formatExportDate(value: string, language: ExportLanguage) {
   const parsedDate = new Date(`${value}T00:00:00`);
 
@@ -1819,12 +1911,16 @@ function formatPrintAmount(amount: number, language: ExportLanguage) {
   return language === "th" ? `${formattedNumber} บาท` : `${formattedNumber} THB`;
 }
 
-function formatOverflowRowsSummary(count: number, language: ExportLanguage) {
+function formatFormPageCounter(
+  currentPage: number,
+  totalPages: number,
+  language: ExportLanguage,
+) {
   if (language === "th") {
-    return `รวมอีก ${count} รายการในยอดรวมด้านล่าง`;
+    return `หน้าฟอร์ม ${currentPage} จาก ${totalPages}`;
   }
 
-  return `${count} more expense ${count === 1 ? "line is" : "lines are"} included in the total below`;
+  return `Form page ${currentPage} of ${totalPages}`;
 }
 
 function formatReceiptPageCounter(
