@@ -113,7 +113,7 @@ import {
 import { buildPublicStorageUrl } from "../lib/supabase-api";
 
 const EMPTY_COMPANY_VALUE = "__none__";
-const EXPORT_FORM_ROWS_PER_PAGE = 10;
+const EXPORT_FORM_ROWS_PER_PAGE = 15;
 const RECEIPTS_PER_PAGE = 4;
 const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
 const PRINT_TABLE_GRID_TEMPLATE = "1.6fr 1.75fr 2.95fr 1.25fr";
@@ -266,6 +266,17 @@ type ExportPdfSource = {
   selectedCompanyLogoUrl: string;
   selectedCompanyName: string;
   totalAmount: number;
+};
+
+type PendingSaveSnapshot = {
+  companyId: string;
+  companyLogoBucketName: string;
+  companyLogoObjectPath: string;
+  companyName: string;
+  employeeName: string;
+  exportLanguage: ExportLanguage;
+  note: string;
+  rows: ExpenseRow[];
 };
 
 export default function ExpenseEditorView({
@@ -1426,17 +1437,9 @@ function ProtectedExpenseEditor({
   const [exportAssetUrlMap, setExportAssetUrlMap] = useState<Record<string, string>>({});
   const [printError, setPrintError] = useState<string | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
-  const pendingSaveRef = useRef<{
-    companyId: string;
-    companyLogoBucketName: string;
-    companyLogoObjectPath: string;
-    companyName: string;
-    employeeName: string;
-    exportLanguage: ExportLanguage;
-    note: string;
-    rows: ExpenseRow[];
-  } | null>(null);
+  const pendingSaveRef = useRef<PendingSaveSnapshot | null>(null);
   const isPersistingRef = useRef(false);
+  const activeSavePromiseRef = useRef<Promise<string | null> | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const skipNextAutosaveRef = useRef(true);
   const hasLoadedDocumentRef = useRef(false);
@@ -1555,18 +1558,7 @@ function ProtectedExpenseEditor({
   const selectedCompanyLogoUrl =
     selectedCompany?.logoUrl ?? (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoUrl : "");
 
-  const flushPendingSave = useEffectEvent(async () => {
-    if (isPersistingRef.current || !pendingSaveRef.current) {
-      return;
-    }
-
-    const nextSnapshot = pendingSaveRef.current;
-
-    if (!nextSnapshot) {
-      return;
-    }
-
-    pendingSaveRef.current = null;
+  const persistSnapshot = async (nextSnapshot: PendingSaveSnapshot) => {
     isPersistingRef.current = true;
     setIsSavingDocument(true);
 
@@ -1631,24 +1623,95 @@ function ProtectedExpenseEditor({
         skipNextAutosaveRef.current = true;
         setRows(saveResult.rows);
       }
+
+      return saveResult.expenseCode;
     } catch (error) {
       if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
         void logout();
-        return;
+        return null;
       }
 
       setSaveError(
         getFriendlyEditorError(error, "save"),
       );
+      return null;
     } finally {
       isPersistingRef.current = false;
       setIsSavingDocument(false);
+    }
+  };
+
+  const startSave = (nextSnapshot: PendingSaveSnapshot) => {
+    const nextSavePromise = persistSnapshot(nextSnapshot).finally(() => {
+      if (activeSavePromiseRef.current === nextSavePromise) {
+        activeSavePromiseRef.current = null;
+      }
 
       if (pendingSaveRef.current) {
-        void flushPendingSave();
+        const queuedSnapshot = pendingSaveRef.current;
+        pendingSaveRef.current = null;
+        void startSave(queuedSnapshot);
+      }
+    });
+
+    activeSavePromiseRef.current = nextSavePromise;
+    return nextSavePromise;
+  };
+
+  const flushPendingSave = useEffectEvent(async () => {
+    if (isPersistingRef.current) {
+      return activeSavePromiseRef.current;
+    }
+
+    const nextSnapshot = pendingSaveRef.current;
+
+    if (!nextSnapshot) {
+      return null;
+    }
+
+    pendingSaveRef.current = null;
+    return startSave(nextSnapshot);
+  });
+
+  const ensurePersistedExpenseCode = async () => {
+    const currentExpenseCode = expenseCode.trim();
+
+    if (currentExpenseCode) {
+      return currentExpenseCode;
+    }
+
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+
+    if (isPersistingRef.current) {
+      const inFlightExpenseCode = await activeSavePromiseRef.current;
+
+      if (inFlightExpenseCode?.trim()) {
+        return inFlightExpenseCode;
       }
     }
-  });
+
+    pendingSaveRef.current = null;
+
+    const persistedExpenseCode = await startSave({
+      companyId: selectedCompanyId,
+      companyLogoBucketName: selectedCompanyLogoBucketName,
+      companyLogoObjectPath: selectedCompanyLogoObjectPath,
+      companyName: selectedCompanyName,
+      employeeName,
+      exportLanguage,
+      note,
+      rows,
+    });
+
+    if (persistedExpenseCode?.trim()) {
+      return persistedExpenseCode;
+    }
+
+    throw new Error("Expense reference was not ready for export.");
+  };
 
   useEffect(() => {
     if (!hasLoadedDocumentRef.current) {
@@ -2046,6 +2109,8 @@ function ProtectedExpenseEditor({
     setIsPreparingPrint(true);
 
     try {
+      await ensurePersistedExpenseCode();
+
       const preparedExportAssets = await buildExportAssetUrlMap(printableAssetUrls);
 
       for (const objectUrl of exportAssetObjectUrlsRef.current) {
@@ -2541,6 +2606,21 @@ function ProtectedExpenseEditor({
                         </article>
                       );
                     })}
+
+                    <div className="flex justify-center pt-1">
+                      <Button
+                        className="rounded-full border-white/10 bg-background/70 px-3 text-xs shadow-none hover:bg-background/85"
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
+                      >
+                        <ChevronUp className="size-3.5" />
+                        Go back to top
+                      </Button>
+                    </div>
                   </div>
                 )}
               </CardContent>
@@ -2741,7 +2821,7 @@ function ProtectedExpenseEditor({
                         <Globe2 className="size-4" />
                       </span>
                       <p className="text-sm leading-7 text-foreground">
-                        The PDF fits up to ten expense lines per page, keeps the same
+                        The PDF fits up to fifteen expense lines per page, keeps the same
                         layout on continuation pages, and adds up to four receipt photos
                         on each extra page.
                       </p>
