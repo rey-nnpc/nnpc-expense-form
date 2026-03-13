@@ -47,6 +47,59 @@ begin
 end;
 $$;
 
+create sequence if not exists public.expense_report_reference_sequence
+  as bigint
+  start with 1
+  increment by 1
+  minvalue 1;
+
+create or replace function public.build_expense_report_code(
+  p_reference_sequence bigint,
+  p_expense_date date
+)
+returns text
+language sql
+immutable
+as $$
+  select format(
+    'EXP-%s-%s%s%s',
+    case
+      when p_reference_sequence < 10000 then lpad(p_reference_sequence::text, 4, '0')
+      else p_reference_sequence::text
+    end,
+    to_char(p_expense_date, 'DD'),
+    (
+      array[
+        'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+        'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'
+      ]
+    )[extract(month from p_expense_date)::integer],
+    to_char(p_expense_date, 'YYYY')
+  );
+$$;
+
+create or replace function public.assign_expense_report_code()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.reference_sequence is null then
+    new.reference_sequence := nextval('public.expense_report_reference_sequence');
+  end if;
+
+  if new.expense_date is null then
+    new.expense_code := null;
+  else
+    new.expense_code := public.build_expense_report_code(
+      new.reference_sequence,
+      new.expense_date
+    );
+  end if;
+
+  return new;
+end;
+$$;
+
 create or replace function public.upsert_expense_day(
   p_expense_date date,
   p_company_id uuid,
@@ -58,13 +111,14 @@ create or replace function public.upsert_expense_day(
   p_note text,
   p_items jsonb
 )
-returns uuid
+returns jsonb
 language plpgsql
 security invoker
 set search_path = public
 as $$
 declare
   v_report_id uuid;
+  v_expense_code text;
   v_item jsonb;
   v_receipt jsonb;
   v_item_id uuid;
@@ -108,7 +162,7 @@ begin
     employee_name = excluded.employee_name,
     note = excluded.note,
     updated_at = timezone('utc', now())
-  returning id into v_report_id;
+  returning id, expense_code into v_report_id, v_expense_code;
 
   delete from public.expense_receipts
   where expense_item_id in (
@@ -190,7 +244,12 @@ begin
     updated_at = timezone('utc', now())
   where id = v_report_id;
 
-  return v_report_id;
+  return jsonb_build_object(
+    'report_id',
+    v_report_id,
+    'expense_code',
+    v_expense_code
+  );
 end;
 $$;
 
@@ -230,6 +289,8 @@ create table if not exists public.expense_types (
 create table if not exists public.expense_reports (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
+  reference_sequence bigint not null default nextval('public.expense_report_reference_sequence'),
+  expense_code text not null,
   expense_date date not null,
   company_id uuid references public.user_companies (id) on delete set null,
   company_name text,
@@ -287,6 +348,12 @@ create index if not exists user_companies_user_created_idx
 create index if not exists expense_reports_user_date_idx
   on public.expense_reports (user_id, expense_date desc);
 
+create unique index if not exists expense_reports_reference_sequence_idx
+  on public.expense_reports (reference_sequence);
+
+create unique index if not exists expense_reports_expense_code_idx
+  on public.expense_reports (expense_code);
+
 create index if not exists expense_reports_company_idx
   on public.expense_reports (company_id);
 
@@ -313,6 +380,12 @@ create trigger set_expense_reports_updated_at
 before update on public.expense_reports
 for each row
 execute function public.set_current_timestamp_updated_at();
+
+drop trigger if exists set_expense_report_code on public.expense_reports;
+create trigger set_expense_report_code
+before insert or update on public.expense_reports
+for each row
+execute function public.assign_expense_report_code();
 
 drop trigger if exists set_expense_items_updated_at on public.expense_items;
 create trigger set_expense_items_updated_at

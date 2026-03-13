@@ -20,6 +20,7 @@ import {
   CloudUpload,
   FileText,
   Globe2,
+  Hash,
   ImagePlus,
   LoaderCircle,
   LogOut,
@@ -52,6 +53,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -76,7 +85,11 @@ import {
   listUserCompanies,
   type CompanyRecord,
 } from "../lib/company-data";
-import { formatDisplayDate } from "../lib/date";
+import {
+  formatDisplayDate,
+  formatExpenseLineReferenceCode,
+  formatExpenseReferenceCode,
+} from "../lib/date";
 import {
   EXPENSE_TYPES,
   buildRemarkSummary,
@@ -100,9 +113,12 @@ import {
 import { buildPublicStorageUrl } from "../lib/supabase-api";
 
 const EMPTY_COMPANY_VALUE = "__none__";
-const PRIMARY_EXPORT_ROW_LIMIT = 6;
+const EXPORT_FORM_ROWS_PER_PAGE = 15;
 const RECEIPTS_PER_PAGE = 4;
 const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
+const PRINT_TABLE_GRID_TEMPLATE = "1.6fr 1.75fr 2.95fr 1.25fr";
+const EXPORT_PAGE_WIDTH_PX = 794;
+const EXPORT_PAGE_HEIGHT_PX = 1123;
 
 const EXPORT_COPY: Record<
   ExportLanguage,
@@ -113,6 +129,7 @@ const EXPORT_COPY: Record<
     companyPending: string;
     date: string;
     employee: string;
+    reference: string;
     note: string;
     line: string;
     expenseType: string;
@@ -131,11 +148,12 @@ const EXPORT_COPY: Record<
 > = {
   en: {
     formTitle: "Expense reimbursement form",
-    formSubtitle: "For expenses without invoice / receipt",
+    formSubtitle: "",
     companyCaption: "Company",
     companyPending: "Select a company in Company Headers",
     date: "Date",
     employee: "Employee",
+    reference: "Reference",
     note: "Note",
     line: "No.",
     expenseType: "Expense type",
@@ -153,11 +171,12 @@ const EXPORT_COPY: Record<
   },
   th: {
     formTitle: "ใบเบิกค่าใช้จ่าย",
-    formSubtitle: "สำหรับค่าใช้จ่ายที่ไม่มีใบกำกับ / ใบเสร็จ",
+    formSubtitle: "",
     companyCaption: "บริษัท",
     companyPending: "กรุณาเลือกบริษัทจากแท็บ Company Headers",
     date: "วันที่",
     employee: "ชื่อผู้เบิก",
+    reference: "เลขอ้างอิง",
     note: "หมายเหตุ",
     line: "ลำดับ",
     expenseType: "ประเภทค่าใช้จ่าย",
@@ -189,13 +208,76 @@ type PendingRemoval =
       receiptId: string;
       receiptName: string;
       rowId: number;
-      rowNumber: number;
+      rowReference: string;
     }
   | {
       kind: "row";
       rowId: number;
-      rowNumber: number;
+      rowReference: string;
     };
+
+type PrintableFormRow = {
+  lineNumber: number;
+  row: ExpenseRow;
+};
+
+type PrintableReceiptEntry = {
+  key: string;
+  label: string;
+  lineNumber: number;
+  receipt: ReceiptDraft;
+  row: ExpenseRow;
+};
+
+type ExportCopy = (typeof EXPORT_COPY)[ExportLanguage];
+
+type ExportFileHandle = {
+  createWritable: () => Promise<{
+    close: () => Promise<void>;
+    write: (data: Blob) => Promise<void>;
+  }>;
+};
+
+type ExportSaveTarget =
+  | {
+      kind: "file-picker";
+      handle: ExportFileHandle;
+    }
+  | {
+      fileName: string;
+      kind: "download";
+    };
+
+type ExportAssetPreparationResult = {
+  assetUrlMap: Record<string, string>;
+  objectUrls: string[];
+};
+
+type ExportPdfSource = {
+  assetUrlMap: Record<string, string>;
+  displayExpenseReference: string;
+  employeeName: string;
+  expenseDate: string;
+  exportCopy: ExportCopy;
+  exportLanguage: ExportLanguage;
+  note: string;
+  printableFormPages: PrintableFormRow[][];
+  receiptPages: PrintableReceiptEntry[][];
+  selectedCompanyLogoUrl: string;
+  selectedCompanyName: string;
+  totalAmount: number;
+};
+
+type PendingSaveSnapshot = {
+  companyId: string;
+  companyLogoBucketName: string;
+  companyLogoObjectPath: string;
+  companyName: string;
+  employeeName: string;
+  exportLanguage: ExportLanguage;
+  note: string;
+  rows: ExpenseRow[];
+};
 
 export default function ExpenseEditorView({
   expenseDate,
@@ -275,7 +357,7 @@ function getFriendlyEditorError(
     }
 
     if (action === "print") {
-      return "We couldn't prepare the receipt photos for printing. Please try again in a moment.";
+      return "We couldn't prepare the receipt photos for PDF export. Please try again in a moment.";
     }
 
     return "We couldn't save your latest changes right now. Please check your internet connection and try again.";
@@ -294,7 +376,7 @@ function getFriendlyEditorError(
   }
 
   if (action === "print") {
-    return "We couldn't get the receipt photos ready for export. Please try again.";
+    return "We couldn't create the PDF export. Please try again.";
   }
 
   return "We couldn't save your latest changes. Please try again.";
@@ -333,10 +415,989 @@ async function preloadPrintableAssets(urls: string[]) {
   return results.every(Boolean);
 }
 
+function isInlineAssetUrl(url: string) {
+  return url.startsWith("blob:") || url.startsWith("data:");
+}
+
+async function buildExportAssetUrlMap(urls: string[]): Promise<ExportAssetPreparationResult> {
+  const uniqueUrls = Array.from(new Set(urls.filter(Boolean)));
+
+  if (uniqueUrls.length === 0) {
+    return {
+      assetUrlMap: {},
+      objectUrls: [],
+    };
+  }
+
+  const objectUrls: string[] = [];
+  const mappedEntries = await Promise.all(
+    uniqueUrls.map(async (url) => {
+      if (isInlineAssetUrl(url)) {
+        return [url, url] as const;
+      }
+
+      const response = await fetch(url, {
+        cache: "force-cache",
+        mode: "cors",
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch export asset (${response.status} ${response.statusText}) for ${url}.`,
+        );
+      }
+
+      const assetBlob = await response.blob();
+      const objectUrl = URL.createObjectURL(assetBlob);
+      objectUrls.push(objectUrl);
+
+      return [url, objectUrl] as const;
+    }),
+  );
+
+  return {
+    assetUrlMap: Object.fromEntries(mappedEntries),
+    objectUrls,
+  };
+}
+
 function waitForNextFrame() {
   return new Promise<void>((resolve) => {
     window.requestAnimationFrame(() => resolve());
   });
+}
+
+function buildExportFileName(reference: string, expenseDate: string) {
+  const safeReference = reference
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return `${safeReference || `expense-${expenseDate}`}.pdf`;
+}
+
+const EXPORT_RENDER_SCALE = 2;
+const EXPORT_PAGE_PADDING_PX = 45;
+const EXPORT_CONTENT_WIDTH_PX = EXPORT_PAGE_WIDTH_PX - EXPORT_PAGE_PADDING_PX * 2;
+const EXPORT_TABLE_COLUMN_WIDTHS_PX = [1.6, 1.75, 2.95, 1.25].map(
+  (fraction) => (EXPORT_CONTENT_WIDTH_PX * fraction) / 7.55,
+);
+
+function createExportPageCanvas() {
+  const canvas = document.createElement("canvas");
+  canvas.width = EXPORT_PAGE_WIDTH_PX * EXPORT_RENDER_SCALE;
+  canvas.height = EXPORT_PAGE_HEIGHT_PX * EXPORT_RENDER_SCALE;
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("A canvas context was not available for PDF export.");
+  }
+
+  context.scale(EXPORT_RENDER_SCALE, EXPORT_RENDER_SCALE);
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, EXPORT_PAGE_WIDTH_PX, EXPORT_PAGE_HEIGHT_PX);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.textBaseline = "top";
+
+  return { canvas, context };
+}
+
+function truncateTextToWidth(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+) {
+  let nextText = text.trimEnd();
+
+  while (nextText && context.measureText(`${nextText}\u2026`).width > maxWidth) {
+    nextText = nextText.slice(0, -1);
+  }
+
+  return nextText ? `${nextText}\u2026` : "\u2026";
+}
+
+function splitTextIntoLines(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+) {
+  const normalizedText = text.replace(/\s+/g, " ").trim();
+
+  if (!normalizedText) {
+    return [] as string[];
+  }
+
+  const lines: string[] = [];
+  let currentLine = "";
+
+  for (const character of Array.from(normalizedText)) {
+    const candidate = `${currentLine}${character}`;
+
+    if (context.measureText(candidate).width <= maxWidth || currentLine.length === 0) {
+      currentLine = candidate;
+      continue;
+    }
+
+    lines.push(currentLine.trim());
+    currentLine = character;
+
+    if (lines.length === maxLines) {
+      break;
+    }
+  }
+
+  if (lines.length < maxLines && currentLine.trim()) {
+    lines.push(currentLine.trim());
+  }
+
+  const joinedLines = lines.join("");
+
+  if (joinedLines.length < normalizedText.length && lines.length > 0) {
+    lines[lines.length - 1] = truncateTextToWidth(
+      context,
+      lines[lines.length - 1] ?? "",
+      maxWidth,
+    );
+  }
+
+  return lines.slice(0, maxLines);
+}
+
+function drawTextBlock({
+  align = "left",
+  color = "#000000",
+  context,
+  font,
+  lineHeight,
+  maxLines,
+  maxWidth,
+  text,
+  x,
+  y,
+}: {
+  align?: CanvasTextAlign;
+  color?: string;
+  context: CanvasRenderingContext2D;
+  font: string;
+  lineHeight: number;
+  maxLines: number;
+  maxWidth: number;
+  text: string;
+  x: number;
+  y: number;
+}) {
+  context.save();
+  context.fillStyle = color;
+  context.font = font;
+
+  const lines = splitTextIntoLines(context, text, maxWidth, maxLines);
+
+  lines.forEach((line, index) => {
+    const drawX =
+      align === "right" ? x + maxWidth - context.measureText(line).width : x;
+
+    context.fillText(line, drawX, y + index * lineHeight);
+  });
+
+  context.restore();
+
+  return lines.length * lineHeight;
+}
+
+function drawHorizontalRule(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  color: string,
+) {
+  context.save();
+  context.beginPath();
+  context.strokeStyle = color;
+  context.lineWidth = 1;
+  context.moveTo(x, y);
+  context.lineTo(x + width, y);
+  context.stroke();
+  context.restore();
+}
+
+function drawImageContain({
+  context,
+  height,
+  image,
+  width,
+  x,
+  y,
+}: {
+  context: CanvasRenderingContext2D;
+  height: number;
+  image: HTMLImageElement;
+  width: number;
+  x: number;
+  y: number;
+}) {
+  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const targetWidth = image.naturalWidth * scale;
+  const targetHeight = image.naturalHeight * scale;
+  const drawX = x + (width - targetWidth) / 2;
+  const drawY = y + (height - targetHeight) / 2;
+
+  context.drawImage(image, drawX, drawY, targetWidth, targetHeight);
+}
+
+function loadCanvasImage(
+  url: string,
+  cache: Map<string, Promise<HTMLImageElement | null>>,
+) {
+  const cachedImage = cache.get(url);
+
+  if (cachedImage) {
+    return cachedImage;
+  }
+
+  const nextImage = new Promise<HTMLImageElement | null>((resolve) => {
+    const image = new window.Image();
+    image.decoding = "sync";
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+
+  cache.set(url, nextImage);
+  return nextImage;
+}
+
+function drawInfoLine({
+  context,
+  label,
+  value,
+  width,
+  x,
+  y,
+}: {
+  context: CanvasRenderingContext2D;
+  label: string;
+  value: string;
+  width: number;
+  x: number;
+  y: number;
+}) {
+  drawTextBlock({
+    color: "rgba(0,0,0,0.45)",
+    context,
+    font: "600 11px Arial, sans-serif",
+    lineHeight: 12,
+    maxLines: 1,
+    maxWidth: width,
+    text: label.toUpperCase(),
+    x,
+    y,
+  });
+
+  drawTextBlock({
+    context,
+    font: "500 13px Arial, sans-serif",
+    lineHeight: 20,
+    maxLines: 2,
+    maxWidth: width,
+    text: value,
+    x,
+    y: y + 18,
+  });
+
+  drawHorizontalRule(context, x, y + 52, width, "rgba(0,0,0,0.15)");
+
+  return y + 52;
+}
+
+async function renderFormPageCanvas(
+  source: ExportPdfSource,
+  rows: PrintableFormRow[],
+  pageIndex: number,
+  imageCache: Map<string, Promise<HTMLImageElement | null>>,
+) {
+  const { canvas, context } = createExportPageCanvas();
+  const contentX = EXPORT_PAGE_PADDING_PX;
+  const contentWidth = EXPORT_CONTENT_WIDTH_PX;
+  const infoWidth = (contentWidth - 16) / 2;
+  const logoSize = 64;
+  let y = EXPORT_PAGE_PADDING_PX;
+
+  if (source.selectedCompanyLogoUrl) {
+    const logoImage = await loadCanvasImage(source.selectedCompanyLogoUrl, imageCache);
+
+    if (logoImage) {
+      drawImageContain({
+        context,
+        height: logoSize,
+        image: logoImage,
+        width: logoSize,
+        x: contentX,
+        y,
+      });
+    } else {
+      drawTextBlock({
+        align: "left",
+        color: "rgba(0,0,0,0.45)",
+        context,
+        font: "600 11px Arial, sans-serif",
+        lineHeight: 12,
+        maxLines: 2,
+        maxWidth: logoSize,
+        text: "Logo",
+        x: contentX + 8,
+        y: y + 24,
+      });
+    }
+  }
+
+  const headerTextX = contentX + logoSize + 18;
+
+  drawTextBlock({
+    color: "rgba(0,0,0,0.55)",
+    context,
+    font: "600 10px Arial, sans-serif",
+    lineHeight: 11,
+    maxLines: 1,
+    maxWidth: contentWidth - logoSize - 120,
+    text: source.exportCopy.companyCaption.toUpperCase(),
+    x: headerTextX,
+    y,
+  });
+
+  const companyNameHeight = drawTextBlock({
+    context,
+    font: "600 28px Georgia, 'Times New Roman', serif",
+    lineHeight: 24,
+    maxLines: 2,
+    maxWidth: contentWidth - logoSize - 120,
+    text: source.selectedCompanyName || source.exportCopy.companyPending,
+    x: headerTextX,
+    y: y + 16,
+  });
+
+  const hasFormSubtitle = Boolean(source.exportCopy.formSubtitle.trim());
+  const subtitleY = y + 16 + companyNameHeight + 4;
+
+  if (hasFormSubtitle) {
+    drawTextBlock({
+      color: "rgba(0,0,0,0.65)",
+      context,
+      font: "400 11px Arial, sans-serif",
+      lineHeight: 13,
+      maxLines: 1,
+      maxWidth: contentWidth - logoSize - 120,
+      text: source.exportCopy.formSubtitle,
+      x: headerTextX,
+      y: subtitleY,
+    });
+  }
+
+  const titleY = hasFormSubtitle ? subtitleY + 20 : y + 16 + companyNameHeight + 8;
+  drawTextBlock({
+    context,
+    font: "700 13px Arial, sans-serif",
+    lineHeight: 14,
+    maxLines: 1,
+    maxWidth: contentWidth - logoSize - 120,
+    text: source.exportCopy.formTitle,
+    x: headerTextX,
+    y: titleY,
+  });
+
+  if (source.printableFormPages.length > 1) {
+    drawTextBlock({
+      align: "right",
+      color: "rgba(0,0,0,0.55)",
+      context,
+      font: "600 9px Arial, sans-serif",
+      lineHeight: 10,
+      maxLines: 1,
+      maxWidth: 140,
+      text: formatFormPageCounter(
+        pageIndex + 1,
+        source.printableFormPages.length,
+        source.exportLanguage,
+      ),
+      x: contentX + contentWidth - 140,
+      y: y + 2,
+    });
+  }
+
+  const headerBottom = Math.max(y + logoSize, titleY + 18);
+  drawHorizontalRule(context, contentX, headerBottom + 10, contentWidth, "rgba(0,0,0,0.25)");
+  y = headerBottom + 26;
+
+  drawInfoLine({
+    context,
+    label: source.exportCopy.date,
+    value: formatExportDate(source.expenseDate, source.exportLanguage),
+    width: infoWidth,
+    x: contentX,
+    y,
+  });
+  drawInfoLine({
+    context,
+    label: source.exportCopy.employee,
+    value: source.employeeName,
+    width: infoWidth,
+    x: contentX + infoWidth + 16,
+    y,
+  });
+
+  y += 70;
+
+  drawInfoLine({
+    context,
+    label: source.exportCopy.reference,
+    value: source.displayExpenseReference,
+    width: infoWidth,
+    x: contentX,
+    y,
+  });
+
+  y += 68;
+
+  drawTextBlock({
+    color: "rgba(0,0,0,0.55)",
+    context,
+    font: "600 10px Arial, sans-serif",
+    lineHeight: 11,
+    maxLines: 1,
+    maxWidth: contentWidth,
+    text: source.exportCopy.note.toUpperCase(),
+    x: contentX,
+    y,
+  });
+
+  drawTextBlock({
+    context,
+    font: "400 11px Arial, sans-serif",
+    lineHeight: 16,
+    maxLines: 2,
+    maxWidth: contentWidth,
+    text: source.note || source.exportCopy.noteFallback,
+    x: contentX,
+    y: y + 18,
+  });
+  drawHorizontalRule(context, contentX, y + 54, contentWidth, "rgba(0,0,0,0.15)");
+  y += 70;
+
+  const tableX = contentX;
+  const tableY = y;
+  const tableHeaderHeight = 30;
+  const tableRowHeight = 38;
+  const tableHeight =
+    rows.length === 0
+      ? 48
+      : tableHeaderHeight + tableRowHeight * rows.length;
+
+  context.save();
+  context.fillStyle = "rgba(0,0,0,0.035)";
+  context.fillRect(tableX, tableY, contentWidth, tableHeaderHeight);
+  context.restore();
+
+  context.save();
+  context.strokeStyle = "rgba(0,0,0,0.4)";
+  context.lineWidth = 1;
+  context.strokeRect(tableX, tableY, contentWidth, tableHeight);
+  context.restore();
+
+  const columnLefts = EXPORT_TABLE_COLUMN_WIDTHS_PX.reduce<number[]>(
+    (positions, width, index) => {
+      if (index === 0) {
+        return [tableX];
+      }
+
+      return [...positions, positions[index - 1] + EXPORT_TABLE_COLUMN_WIDTHS_PX[index - 1]];
+    },
+    [],
+  );
+
+  EXPORT_TABLE_COLUMN_WIDTHS_PX.slice(0, -1).forEach((width, index) => {
+    const dividerX = (columnLefts[index] ?? tableX) + width;
+    context.save();
+    context.beginPath();
+    context.strokeStyle = "rgba(0,0,0,0.25)";
+    context.moveTo(dividerX, tableY);
+    context.lineTo(dividerX, tableY + tableHeight);
+    context.stroke();
+    context.restore();
+  });
+
+  context.save();
+  context.beginPath();
+  context.strokeStyle = "rgba(0,0,0,0.35)";
+  context.moveTo(tableX, tableY + tableHeaderHeight);
+  context.lineTo(tableX + contentWidth, tableY + tableHeaderHeight);
+  context.stroke();
+  context.restore();
+
+  [
+    source.exportCopy.line,
+    source.exportCopy.expenseType,
+    source.exportCopy.expenseNote,
+    source.exportCopy.amount,
+  ].forEach((label, index) => {
+    drawTextBlock({
+      align: index === 3 ? "right" : "left",
+      color: "rgba(0,0,0,0.85)",
+      context,
+      font: "700 8px Arial, sans-serif",
+      lineHeight: 10,
+      maxLines: 1,
+      maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[index] ?? 0) - 16,
+      text: label.toUpperCase(),
+      x: (columnLefts[index] ?? tableX) + 8,
+      y: tableY + 10,
+    });
+  });
+
+  if (rows.length === 0) {
+    drawTextBlock({
+      color: "rgba(0,0,0,0.6)",
+      context,
+      font: "400 13px Arial, sans-serif",
+      lineHeight: 16,
+      maxLines: 2,
+      maxWidth: contentWidth - 20,
+      text: source.exportCopy.noExpenses,
+      x: tableX + 10,
+      y: tableY + tableHeaderHeight + 12,
+    });
+  } else {
+    rows.forEach(({ lineNumber, row }, rowIndex) => {
+      const rowTop = tableY + tableHeaderHeight + rowIndex * tableRowHeight;
+
+      context.save();
+      context.beginPath();
+      context.strokeStyle = "rgba(0,0,0,0.25)";
+      context.moveTo(tableX, rowTop + tableRowHeight);
+      context.lineTo(tableX + contentWidth, rowTop + tableRowHeight);
+      context.stroke();
+      context.restore();
+
+      drawTextBlock({
+        color: "#000000",
+        context,
+        font: "700 8px Arial, sans-serif",
+        lineHeight: 10,
+        maxLines: 2,
+        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[0] ?? 0) - 16,
+        text: formatExpenseLineReferenceCode(
+          source.expenseDate,
+          lineNumber,
+          source.displayExpenseReference,
+        ),
+        x: tableX + 8,
+        y: rowTop + 8,
+      });
+
+      drawTextBlock({
+        color: "#000000",
+        context,
+        font: "600 11px Arial, sans-serif",
+        lineHeight: 13,
+        maxLines: 2,
+        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[1] ?? 0) - 16,
+        text: formatExportExpenseTypeLabel(row.typeId, source.exportLanguage),
+        x: (columnLefts[1] ?? tableX) + 8,
+        y: rowTop + 7,
+      });
+
+      drawTextBlock({
+        color: "rgba(0,0,0,0.78)",
+        context,
+        font: "400 10px Arial, sans-serif",
+        lineHeight: 13,
+        maxLines: 2,
+        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[2] ?? 0) - 16,
+        text: row.remark || source.exportCopy.emptyRemark,
+        x: (columnLefts[2] ?? tableX) + 8,
+        y: rowTop + 7,
+      });
+
+      drawTextBlock({
+        align: "right",
+        color: "#000000",
+        context,
+        font: "600 11px Arial, sans-serif",
+        lineHeight: 13,
+        maxLines: 1,
+        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[3] ?? 0) - 16,
+        text: row.amount.trim()
+          ? formatPrintAmount(parseAmount(row.amount), source.exportLanguage)
+          : "-",
+        x: (columnLefts[3] ?? tableX) + 8,
+        y: rowTop + 11,
+      });
+    });
+  }
+
+  if (pageIndex === source.printableFormPages.length - 1) {
+    const fixedFooterTop = EXPORT_PAGE_HEIGHT_PX - EXPORT_PAGE_PADDING_PX - 126;
+    const footerTop = Math.max(tableY + tableHeight + 14, fixedFooterTop);
+    drawHorizontalRule(context, contentX, footerTop, contentWidth, "rgba(0,0,0,0.25)");
+
+    drawTextBlock({
+      align: "right",
+      context,
+      font: "600 12px Arial, sans-serif",
+      lineHeight: 14,
+      maxLines: 1,
+      maxWidth: contentWidth,
+      text: `${source.exportCopy.total}: ${formatPrintAmount(
+        source.totalAmount,
+        source.exportLanguage,
+      )}`,
+      x: contentX,
+      y: footerTop + 10,
+    });
+
+    const signatureTop = footerTop + 56;
+    const signatureGap = 14;
+    const signatureWidth = (contentWidth - signatureGap * 2) / 3;
+
+    source.exportCopy.signatures.forEach((label, signatureIndex) => {
+      const signatureX = contentX + signatureIndex * (signatureWidth + signatureGap);
+      const centeredX = signatureX + signatureWidth / 2;
+
+      context.save();
+      context.fillStyle = "#000000";
+      context.font = "600 9px Arial, sans-serif";
+      const hintWidth = context.measureText(source.exportCopy.signatureHint).width;
+      context.fillText(source.exportCopy.signatureHint, centeredX - hintWidth / 2, signatureTop);
+      context.restore();
+
+      drawHorizontalRule(
+        context,
+        signatureX,
+        signatureTop + 34,
+        signatureWidth,
+        "rgba(0,0,0,0.75)",
+      );
+
+      context.save();
+      context.fillStyle = "rgba(0,0,0,0.8)";
+      context.font = "400 9px Arial, sans-serif";
+      const labelWidth = context.measureText(label).width;
+      context.fillText(label, centeredX - labelWidth / 2, signatureTop + 44);
+      context.restore();
+    });
+  }
+
+  return canvas;
+}
+
+async function renderReceiptPageCanvas(
+  source: ExportPdfSource,
+  entries: PrintableReceiptEntry[],
+  pageIndex: number,
+  imageCache: Map<string, Promise<HTMLImageElement | null>>,
+) {
+  const { canvas, context } = createExportPageCanvas();
+  const contentX = EXPORT_PAGE_PADDING_PX;
+  const contentWidth = EXPORT_CONTENT_WIDTH_PX;
+  const gridGap = 18;
+  const cellWidth = (contentWidth - gridGap) / 2;
+  const itemHeight = 430;
+  const imageHeight = 300;
+  let y = EXPORT_PAGE_PADDING_PX;
+
+  drawTextBlock({
+    color: "rgba(0,0,0,0.55)",
+    context,
+    font: "600 10px Arial, sans-serif",
+    lineHeight: 11,
+    maxLines: 1,
+    maxWidth: contentWidth,
+    text: source.exportCopy.receiptsSheetTitle.toUpperCase(),
+    x: contentX,
+    y,
+  });
+
+  drawTextBlock({
+    color: "rgba(0,0,0,0.65)",
+    context,
+    font: "400 12px Arial, sans-serif",
+    lineHeight: 14,
+    maxLines: 1,
+    maxWidth: contentWidth,
+    text: formatReceiptPageCounter(pageIndex + 1, source.receiptPages.length, source.exportLanguage),
+    x: contentX,
+    y: y + 18,
+  });
+
+  drawHorizontalRule(context, contentX, y + 44, contentWidth, "rgba(0,0,0,0.25)");
+  y += 60;
+
+  for (const [entryIndex, entry] of entries.entries()) {
+    const columnIndex = entryIndex % 2;
+    const rowIndex = Math.floor(entryIndex / 2);
+    const cardX = contentX + columnIndex * (cellWidth + gridGap);
+    const cardY = y + rowIndex * (itemHeight + gridGap);
+    const receiptPreviewUrl =
+      source.assetUrlMap[entry.receipt.previewUrl] ?? entry.receipt.previewUrl;
+    const receiptImage = await loadCanvasImage(receiptPreviewUrl, imageCache);
+
+    drawTextBlock({
+      color: "rgba(0,0,0,0.55)",
+      context,
+      font: "600 9px Arial, sans-serif",
+      lineHeight: 11,
+      maxLines: 1,
+      maxWidth: cellWidth,
+      text: entry.label.toUpperCase(),
+      x: cardX,
+      y: cardY,
+    });
+
+    drawTextBlock({
+      color: "rgba(0,0,0,0.65)",
+      context,
+      font: "400 11px Arial, sans-serif",
+      lineHeight: 13,
+      maxLines: 1,
+      maxWidth: cellWidth,
+      text: formatExportExpenseTypeLabel(entry.row.typeId, source.exportLanguage),
+      x: cardX,
+      y: cardY + 18,
+    });
+
+    context.save();
+    context.strokeStyle = "rgba(0,0,0,0.25)";
+    context.strokeRect(cardX, cardY + 44, cellWidth, imageHeight);
+    context.restore();
+
+    if (receiptImage) {
+      drawImageContain({
+        context,
+        height: imageHeight - 16,
+        image: receiptImage,
+        width: cellWidth - 16,
+        x: cardX + 8,
+        y: cardY + 52,
+      });
+    } else {
+      drawTextBlock({
+        color: "rgba(0,0,0,0.45)",
+        context,
+        font: "500 12px Arial, sans-serif",
+        lineHeight: 14,
+        maxLines: 2,
+        maxWidth: cellWidth - 24,
+        text: "Receipt image unavailable",
+        x: cardX + 12,
+        y: cardY + 170,
+      });
+    }
+
+    drawTextBlock({
+      color: "rgba(0,0,0,0.6)",
+      context,
+      font: "400 10px Arial, sans-serif",
+      lineHeight: 12,
+      maxLines: 1,
+      maxWidth: cellWidth,
+      text: entry.receipt.name,
+      x: cardX,
+      y: cardY + imageHeight + 56,
+    });
+  }
+
+  return canvas;
+}
+
+async function createExportPdfBlob(source: ExportPdfSource) {
+  const [{ jsPDF }] = await Promise.all([import("jspdf")]);
+  const pdf = new jsPDF({
+    compress: true,
+    format: "a4",
+    orientation: "portrait",
+    unit: "mm",
+  });
+  const pdfWidth = pdf.internal.pageSize.getWidth();
+  const pdfHeight = pdf.internal.pageSize.getHeight();
+  const imageCache = new Map<string, Promise<HTMLImageElement | null>>();
+  let renderedPageIndex = 0;
+
+  for (const [formPageIndex, pageRows] of source.printableFormPages.entries()) {
+    const canvas = await renderFormPageCanvas(source, pageRows, formPageIndex, imageCache);
+
+    if (renderedPageIndex > 0) {
+      pdf.addPage("a4", "portrait");
+    }
+
+    pdf.addImage(canvas, "PNG", 0, 0, pdfWidth, pdfHeight, undefined, "FAST");
+    renderedPageIndex += 1;
+  }
+
+  for (const [receiptPageIndex, pageEntries] of source.receiptPages.entries()) {
+    const canvas = await renderReceiptPageCanvas(
+      source,
+      pageEntries,
+      receiptPageIndex,
+      imageCache,
+    );
+
+    if (renderedPageIndex > 0) {
+      pdf.addPage("a4", "portrait");
+    }
+
+    pdf.addImage(canvas, "PNG", 0, 0, pdfWidth, pdfHeight, undefined, "FAST");
+    renderedPageIndex += 1;
+  }
+
+  const exportBlob = pdf.output("blob");
+  return exportBlob;
+}
+
+async function requestExportSaveTarget(fileName: string) {
+  const saveWindow = window as Window & {
+    showSaveFilePicker?: (options?: {
+      suggestedName?: string;
+      types?: Array<{
+        accept: Record<string, string[]>;
+        description: string;
+      }>;
+    }) => Promise<ExportFileHandle>;
+  };
+
+  const canUseFilePicker = Boolean(saveWindow.showSaveFilePicker && window.isSecureContext);
+
+  if (canUseFilePicker) {
+    const showSaveFilePicker = saveWindow.showSaveFilePicker;
+
+    if (!showSaveFilePicker) {
+      throw new Error("showSaveFilePicker became unavailable before export save started.");
+    }
+
+    try {
+      const fileHandle = await showSaveFilePicker({
+        suggestedName: fileName,
+        types: [
+          {
+            accept: {
+              "application/pdf": [".pdf"],
+            },
+            description: "PDF document",
+          },
+        ],
+      });
+
+      return {
+        handle: fileHandle,
+        kind: "file-picker",
+      } satisfies ExportSaveTarget;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  return {
+    fileName,
+    kind: "download",
+  } satisfies ExportSaveTarget;
+}
+
+async function saveExportPdfBlob(blob: Blob, saveTarget: ExportSaveTarget) {
+  if (saveTarget.kind === "file-picker") {
+    const writable = await saveTarget.handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return true;
+  }
+
+  const blobUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.style.display = "none";
+  anchor.href = blobUrl;
+  anchor.download = saveTarget.fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  return true;
+}
+
+function DesktopExportPreviewPageCard({
+  children,
+  scale,
+}: {
+  children: ReactNode;
+  scale: number;
+}) {
+  return (
+    <div className="export-preview-frame mx-auto max-w-full">
+      <div
+        className="overflow-hidden"
+        style={{
+          height: `${EXPORT_PAGE_HEIGHT_PX * scale}px`,
+          width: `${EXPORT_PAGE_WIDTH_PX * scale}px`,
+        }}
+      >
+        <div
+          className="origin-top-left"
+          style={{
+            transform: `scale(${scale})`,
+            width: `${EXPORT_PAGE_WIDTH_PX}px`,
+          }}
+        >
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MobileExportPreviewPageCard({
+  children,
+  label,
+  scale,
+}: {
+  children: ReactNode;
+  label: string;
+  scale: number;
+}) {
+  return (
+    <article className="rounded-[1.45rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))] p-2 shadow-[0_18px_52px_-34px_rgba(15,23,42,0.55)]">
+      <div className="mb-2 flex items-center justify-between gap-2 px-1">
+        <Badge className="rounded-full px-2.5 py-1 text-[0.64rem] uppercase tracking-[0.2em]" variant="secondary">
+          {label}
+        </Badge>
+        <p className="text-[0.64rem] uppercase tracking-[0.22em] text-muted-foreground">
+          Mobile fit
+        </p>
+      </div>
+
+      <div className="overflow-hidden rounded-[1.1rem] border border-black/8 bg-[linear-gradient(180deg,#edf2ed,#e2e9e2)] p-1.5">
+        <div
+          className="mx-auto overflow-hidden rounded-[0.9rem] bg-white"
+          style={{
+            height: `${EXPORT_PAGE_HEIGHT_PX * scale}px`,
+            width: `${EXPORT_PAGE_WIDTH_PX * scale}px`,
+          }}
+        >
+          <div
+            className="origin-top-left"
+            style={{
+              transform: `scale(${scale})`,
+              width: `${EXPORT_PAGE_WIDTH_PX}px`,
+            }}
+          >
+            {children}
+          </div>
+        </div>
+      </div>
+    </article>
+  );
 }
 
 function ProtectedExpenseEditor({
@@ -359,6 +1420,7 @@ function ProtectedExpenseEditor({
   const [loadedCompanyLogoUrl, setLoadedCompanyLogoUrl] = useState("");
   const [exportLanguage, setExportLanguage] = useState<ExportLanguage>("en");
   const [note, setNote] = useState("");
+  const [expenseCode, setExpenseCode] = useState("");
   const [rows, setRows] = useState<ExpenseRow[]>([]);
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [isLoadingDocument, setIsLoadingDocument] = useState(true);
@@ -368,22 +1430,21 @@ function ProtectedExpenseEditor({
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [lastPrintedAt, setLastPrintedAt] = useState<string | null>(null);
   const [isPreparingPrint, setIsPreparingPrint] = useState(false);
+  const [isExportPreviewOpen, setIsExportPreviewOpen] = useState(false);
+  const [isSavingPdf, setIsSavingPdf] = useState(false);
+  const [isMobileExportPreview, setIsMobileExportPreview] = useState(false);
+  const [exportPreviewScale, setExportPreviewScale] = useState(1);
+  const [exportAssetUrlMap, setExportAssetUrlMap] = useState<Record<string, string>>({});
   const [printError, setPrintError] = useState<string | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
-  const pendingSaveRef = useRef<{
-    companyId: string;
-    companyLogoBucketName: string;
-    companyLogoObjectPath: string;
-    companyName: string;
-    employeeName: string;
-    exportLanguage: ExportLanguage;
-    note: string;
-    rows: ExpenseRow[];
-  } | null>(null);
+  const pendingSaveRef = useRef<PendingSaveSnapshot | null>(null);
   const isPersistingRef = useRef(false);
+  const activeSavePromiseRef = useRef<Promise<string | null> | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const skipNextAutosaveRef = useRef(true);
   const hasLoadedDocumentRef = useRef(false);
+  const exportAssetObjectUrlsRef = useRef<string[]>([]);
+  const exportPreviewViewportRef = useRef<HTMLDivElement | null>(null);
 
   const applyLoadedDocument = useEffectEvent((
     existingReport: ExpenseDayDocument | null,
@@ -401,6 +1462,7 @@ function ProtectedExpenseEditor({
       setLoadedCompanyLogoObjectPath("");
       setLoadedCompanyLogoUrl("");
       setExportLanguage("en");
+      setExpenseCode("");
       setNote("");
       setRows([]);
     } else {
@@ -412,6 +1474,7 @@ function ProtectedExpenseEditor({
       setLoadedCompanyLogoObjectPath(existingReport.companyLogoObjectPath);
       setLoadedCompanyLogoUrl(existingReport.companyLogoUrl);
       setExportLanguage(existingReport.exportLanguage);
+      setExpenseCode(existingReport.expenseCode);
       setNote(existingReport.note);
       setRows(buildRowsFromLoadedReport(existingReport.rows));
     }
@@ -477,35 +1540,25 @@ function ProtectedExpenseEditor({
   }, [cacheUserKey, defaultEmployeeName, expenseDate, logout, session.accessToken]);
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
+  const shouldUseLoadedCompanySnapshot =
+    !selectedCompany &&
+    ((selectedCompanyId && selectedCompanyId === loadedCompanyId) ||
+      (!selectedCompanyId &&
+        !loadedCompanyId &&
+        Boolean(loadedCompanyName.trim() || loadedCompanyLogoUrl)));
   const selectedCompanyName =
     selectedCompany?.companyName ??
-    (selectedCompanyId && selectedCompanyId === loadedCompanyId ? loadedCompanyName : "");
+    (shouldUseLoadedCompanySnapshot ? loadedCompanyName : "");
   const selectedCompanyLogoBucketName =
     selectedCompany?.logoBucketName ??
-    (selectedCompanyId && selectedCompanyId === loadedCompanyId
-      ? loadedCompanyLogoBucketName
-      : "");
+    (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoBucketName : "");
   const selectedCompanyLogoObjectPath =
     selectedCompany?.logoObjectPath ??
-    (selectedCompanyId && selectedCompanyId === loadedCompanyId
-      ? loadedCompanyLogoObjectPath
-      : "");
+    (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoObjectPath : "");
   const selectedCompanyLogoUrl =
-    selectedCompany?.logoUrl ??
-    (selectedCompanyId && selectedCompanyId === loadedCompanyId ? loadedCompanyLogoUrl : "");
+    selectedCompany?.logoUrl ?? (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoUrl : "");
 
-  const flushPendingSave = useEffectEvent(async () => {
-    if (isPersistingRef.current || !pendingSaveRef.current) {
-      return;
-    }
-
-    const nextSnapshot = pendingSaveRef.current;
-
-    if (!nextSnapshot) {
-      return;
-    }
-
-    pendingSaveRef.current = null;
+  const persistSnapshot = async (nextSnapshot: PendingSaveSnapshot) => {
     isPersistingRef.current = true;
     setIsSavingDocument(true);
 
@@ -524,6 +1577,7 @@ function ProtectedExpenseEditor({
       });
 
       setSaveError(null);
+      setExpenseCode(saveResult.expenseCode);
       setLastSavedAt(
         new Intl.DateTimeFormat("en-US", {
           dateStyle: "medium",
@@ -555,11 +1609,13 @@ function ProtectedExpenseEditor({
         employeeName: nextSnapshot.employeeName,
         exportLanguage: nextSnapshot.exportLanguage,
         note: nextSnapshot.note,
-        reportId: "",
+        expenseCode: saveResult.expenseCode,
+        reportId: saveResult.reportId,
         rows: persistedRows,
       });
       upsertExpenseSummaryCache(cacheUserKey, {
         date: expenseDate,
+        expenseCode: saveResult.expenseCode,
         totalAmount: persistedRows.reduce((sum, row) => sum + parseAmount(row.amount), 0),
       });
 
@@ -567,24 +1623,95 @@ function ProtectedExpenseEditor({
         skipNextAutosaveRef.current = true;
         setRows(saveResult.rows);
       }
+
+      return saveResult.expenseCode;
     } catch (error) {
       if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
         void logout();
-        return;
+        return null;
       }
 
       setSaveError(
         getFriendlyEditorError(error, "save"),
       );
+      return null;
     } finally {
       isPersistingRef.current = false;
       setIsSavingDocument(false);
+    }
+  };
+
+  const startSave = (nextSnapshot: PendingSaveSnapshot) => {
+    const nextSavePromise = persistSnapshot(nextSnapshot).finally(() => {
+      if (activeSavePromiseRef.current === nextSavePromise) {
+        activeSavePromiseRef.current = null;
+      }
 
       if (pendingSaveRef.current) {
-        void flushPendingSave();
+        const queuedSnapshot = pendingSaveRef.current;
+        pendingSaveRef.current = null;
+        void startSave(queuedSnapshot);
+      }
+    });
+
+    activeSavePromiseRef.current = nextSavePromise;
+    return nextSavePromise;
+  };
+
+  const flushPendingSave = useEffectEvent(async () => {
+    if (isPersistingRef.current) {
+      return activeSavePromiseRef.current;
+    }
+
+    const nextSnapshot = pendingSaveRef.current;
+
+    if (!nextSnapshot) {
+      return null;
+    }
+
+    pendingSaveRef.current = null;
+    return startSave(nextSnapshot);
+  });
+
+  const ensurePersistedExpenseCode = async () => {
+    const currentExpenseCode = expenseCode.trim();
+
+    if (currentExpenseCode) {
+      return currentExpenseCode;
+    }
+
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+
+    if (isPersistingRef.current) {
+      const inFlightExpenseCode = await activeSavePromiseRef.current;
+
+      if (inFlightExpenseCode?.trim()) {
+        return inFlightExpenseCode;
       }
     }
-  });
+
+    pendingSaveRef.current = null;
+
+    const persistedExpenseCode = await startSave({
+      companyId: selectedCompanyId,
+      companyLogoBucketName: selectedCompanyLogoBucketName,
+      companyLogoObjectPath: selectedCompanyLogoObjectPath,
+      companyName: selectedCompanyName,
+      employeeName,
+      exportLanguage,
+      note,
+      rows,
+    });
+
+    if (persistedExpenseCode?.trim()) {
+      return persistedExpenseCode;
+    }
+
+    throw new Error("Expense reference was not ready for export.");
+  };
 
   useEffect(() => {
     if (!hasLoadedDocumentRef.current) {
@@ -632,25 +1759,88 @@ function ProtectedExpenseEditor({
     selectedCompanyName,
   ]);
 
+  useEffect(() => {
+    if (!isExportPreviewOpen || !exportPreviewViewportRef.current) {
+      return;
+    }
+
+    const viewport = exportPreviewViewportRef.current;
+
+    const syncPreviewScale = () => {
+      const nextIsMobilePreview = viewport.clientWidth < 768;
+      const availableWidth = Math.max(220, viewport.clientWidth - (nextIsMobilePreview ? 12 : 0));
+      const widthScale = availableWidth / EXPORT_PAGE_WIDTH_PX;
+
+      setIsMobileExportPreview(nextIsMobilePreview);
+
+      if (nextIsMobilePreview) {
+        const availableHeight = Math.max(240, viewport.clientHeight - 24);
+        const heightScale = availableHeight / EXPORT_PAGE_HEIGHT_PX;
+        const nextScale = Math.min(0.78, Math.max(0.22, Math.min(widthScale, heightScale)));
+
+        setExportPreviewScale(nextScale);
+        return;
+      }
+
+      const nextScale = Math.min(1, Math.max(0.34, widthScale));
+      setExportPreviewScale(nextScale);
+    };
+
+    syncPreviewScale();
+
+    const resizeObserver = new ResizeObserver(() => {
+      syncPreviewScale();
+    });
+
+    resizeObserver.observe(viewport);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isExportPreviewOpen]);
+
+  useEffect(() => {
+    return () => {
+      for (const objectUrl of exportAssetObjectUrlsRef.current) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, []);
+
   const rowNumberById = new Map(rows.map((row, index) => [row.id, index + 1]));
   const populatedRows = rows.filter(hasRowContent);
-  const populatedRowsWithLineNumbers = populatedRows.map((row, index) => ({
+  const populatedRowsWithLineNumbers: PrintableFormRow[] = populatedRows.map((row, index) => ({
     lineNumber: index + 1,
     row,
   }));
+  const displayExpenseReference = formatExpenseReferenceCode(expenseDate, expenseCode);
+  const printableEmployeeName = employeeName || defaultEmployeeName;
   const totalAmount = rows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const totalReceipts = rows.reduce((sum, row) => sum + row.receipts.length, 0);
   const exportCopy = EXPORT_COPY[exportLanguage];
-  const printableFormRows = populatedRowsWithLineNumbers.slice(0, PRIMARY_EXPORT_ROW_LIMIT);
-  const overflowRows = populatedRowsWithLineNumbers.slice(PRIMARY_EXPORT_ROW_LIMIT);
-  const overflowAmount = overflowRows.reduce(
-    (sum, entry) => sum + parseAmount(entry.row.amount),
-    0,
-  );
-  const printableReceipts = populatedRowsWithLineNumbers.flatMap(({ lineNumber, row }) =>
+  const hasStoredCompanySnapshot = Boolean(loadedCompanyName.trim() || loadedCompanyLogoUrl);
+  const printableFormPages =
+    populatedRowsWithLineNumbers.length > 0
+      ? chunkEntries(populatedRowsWithLineNumbers, EXPORT_FORM_ROWS_PER_PAGE)
+      : [populatedRowsWithLineNumbers];
+  const exportValidationMessage =
+    !selectedCompanyName.trim()
+      ? companies.length === 0 && !hasStoredCompanySnapshot
+        ? "Add a company profile with a logo in Company Headers before exporting."
+        : "Select a company profile before exporting."
+      : !selectedCompanyLogoUrl
+        ? "The selected company profile is missing a logo. Update it in Company Headers before exporting."
+        : null;
+  const canExport = exportValidationMessage === null;
+  const printableReceipts: PrintableReceiptEntry[] = populatedRowsWithLineNumbers.flatMap(
+    ({ lineNumber, row }) =>
     row.receipts.map((receipt, receiptIndex) => ({
       key: `${row.id}-${receipt.id}`,
-      label: `${exportCopy.receiptLabel} - ${exportCopy.expenseLabel} ${String(lineNumber).padStart(2, "0")}${
+      label: `${exportCopy.receiptLabel} - ${formatExpenseLineReferenceCode(
+        expenseDate,
+        lineNumber,
+        expenseCode,
+      )}${
         row.receipts.length > 1 ? `.${receiptIndex + 1}` : ""
       }`,
       lineNumber,
@@ -663,6 +1853,52 @@ function ProtectedExpenseEditor({
     selectedCompanyLogoUrl,
     ...printableReceipts.map((entry) => entry.receipt.previewUrl),
   ].filter(Boolean);
+  const exportSelectedCompanyLogoUrl =
+    exportAssetUrlMap[selectedCompanyLogoUrl] ?? selectedCompanyLogoUrl;
+  const exportPreviewPages = [
+    ...printableFormPages.map((pageRows, pageIndex) => ({
+      key: `form-page-${pageIndex + 1}`,
+      label:
+        printableFormPages.length > 1
+          ? formatFormPageCounter(pageIndex + 1, printableFormPages.length, exportLanguage)
+          : exportCopy.formTitle,
+      node: (
+        <PrintExpenseFormPage
+          currentPage={pageIndex + 1}
+          displayExpenseReference={displayExpenseReference}
+          employeeName={printableEmployeeName}
+          expenseDate={expenseDate}
+          exportCopy={exportCopy}
+          exportLanguage={exportLanguage}
+          note={note}
+          rows={pageRows}
+          selectedCompanyLogoUrl={exportSelectedCompanyLogoUrl}
+          selectedCompanyName={selectedCompanyName}
+          showFooter={pageIndex === printableFormPages.length - 1}
+          totalAmount={totalAmount}
+          totalPages={printableFormPages.length}
+        />
+      ),
+    })),
+    ...receiptPages.map((pageEntries, pageIndex) => ({
+      key: `receipt-page-${pageIndex + 1}`,
+      label: `${exportCopy.receiptsSheetTitle} ${formatReceiptPageCounter(
+        pageIndex + 1,
+        receiptPages.length,
+        exportLanguage,
+      )}`,
+      node: (
+        <ReceiptExportPage
+          assetUrlMap={exportAssetUrlMap}
+          entries={pageEntries}
+          exportCopy={exportCopy}
+          exportLanguage={exportLanguage}
+          pageIndex={pageIndex}
+          totalPages={receiptPages.length}
+        />
+      ),
+    })),
+  ];
   const editorStatus = saveError
     ? {
         description: saveError,
@@ -822,20 +2058,24 @@ function ProtectedExpenseEditor({
   };
 
   const requestRowRemoval = (rowId: number) => {
+    const rowNumber = rowNumberById.get(rowId) ?? rowId;
+
     setPendingRemoval({
       kind: "row",
       rowId,
-      rowNumber: rowNumberById.get(rowId) ?? rowId,
+      rowReference: formatExpenseLineReferenceCode(expenseDate, rowNumber, expenseCode),
     });
   };
 
   const requestReceiptRemoval = (rowId: number, receipt: ReceiptDraft) => {
+    const rowNumber = rowNumberById.get(rowId) ?? rowId;
+
     setPendingRemoval({
       kind: "receipt",
       receiptId: receipt.id,
       receiptName: receipt.name,
       rowId,
-      rowNumber: rowNumberById.get(rowId) ?? rowId,
+      rowReference: formatExpenseLineReferenceCode(expenseDate, rowNumber, expenseCode),
     });
   };
 
@@ -858,28 +2098,100 @@ function ProtectedExpenseEditor({
       return;
     }
 
+    if (!canExport) {
+      setPrintError(
+        exportValidationMessage ?? "Select a company profile with a logo before exporting.",
+      );
+      return;
+    }
+
     setPrintError(null);
     setIsPreparingPrint(true);
 
-    const printedAt = new Intl.DateTimeFormat("en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date());
-
     try {
-      const areAssetsReady = await preloadPrintableAssets(printableAssetUrls);
+      await ensurePersistedExpenseCode();
+
+      const preparedExportAssets = await buildExportAssetUrlMap(printableAssetUrls);
+
+      for (const objectUrl of exportAssetObjectUrlsRef.current) {
+        URL.revokeObjectURL(objectUrl);
+      }
+
+      exportAssetObjectUrlsRef.current = preparedExportAssets.objectUrls;
+      setExportAssetUrlMap(preparedExportAssets.assetUrlMap);
+
+      const areAssetsReady = await preloadPrintableAssets(
+        Object.values(preparedExportAssets.assetUrlMap),
+      );
 
       if (!areAssetsReady) {
         throw new Error("Printable assets were not ready in time.");
       }
 
+      if ("fonts" in document) {
+        await document.fonts.ready;
+      }
+
       await waitForNextFrame();
-      setLastPrintedAt(printedAt);
-      window.print();
+      setIsExportPreviewOpen(true);
     } catch (error) {
       setPrintError(getFriendlyEditorError(error, "print"));
     } finally {
       setIsPreparingPrint(false);
+    }
+  };
+
+  const handleConfirmExport = async () => {
+    if (isSavingPdf) {
+      return;
+    }
+
+    setPrintError(null);
+    setIsSavingPdf(true);
+    const exportFileName = buildExportFileName(displayExpenseReference, expenseDate);
+
+    const exportedAt = new Intl.DateTimeFormat("en-US", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date());
+
+    try {
+      const saveTarget = await requestExportSaveTarget(exportFileName);
+
+      if (!saveTarget) {
+        return;
+      }
+
+      if ("fonts" in document) {
+        await document.fonts.ready;
+      }
+
+      const exportBlob = await createExportPdfBlob({
+        assetUrlMap: exportAssetUrlMap,
+        displayExpenseReference,
+        employeeName: printableEmployeeName,
+        expenseDate,
+        exportCopy,
+        exportLanguage,
+        note,
+        printableFormPages,
+        receiptPages,
+        selectedCompanyLogoUrl: exportSelectedCompanyLogoUrl,
+        selectedCompanyName,
+        totalAmount,
+      });
+      const didSave = await saveExportPdfBlob(exportBlob, saveTarget);
+
+      if (!didSave) {
+        return;
+      }
+
+      setLastPrintedAt(exportedAt);
+      setIsExportPreviewOpen(false);
+    } catch (error) {
+      setPrintError(getFriendlyEditorError(error, "print"));
+    } finally {
+      setIsSavingPdf(false);
     }
   };
 
@@ -948,6 +2260,9 @@ function ProtectedExpenseEditor({
                     <Badge className="rounded-full px-3 py-1" variant="secondary">
                       {expenseDate}
                     </Badge>
+                    <Badge className="rounded-full px-3 py-1" variant="outline">
+                      {displayExpenseReference}
+                    </Badge>
                   </div>
 
                   <div className="space-y-3">
@@ -959,16 +2274,16 @@ function ProtectedExpenseEditor({
                     </CardTitle>
                     <CardDescription className="max-w-3xl text-sm leading-7 sm:text-base">
                       Add each expense for this day, attach one or more receipt photos,
-                      then print a clean form with extra receipt pages.
+                      then export a clean PDF with extra receipt pages.
                     </CardDescription>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
                   <ThemeSettingsSheet userEmail={session.userEmail} />
                   <Button
-                    className="rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90"
-                    disabled={isPreparingPrint}
+                    className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90 sm:w-auto"
+                    disabled={isPreparingPrint || !canExport}
                     size="sm"
                     type="button"
                     variant="outline"
@@ -981,10 +2296,10 @@ function ProtectedExpenseEditor({
                     ) : (
                       <Printer className="size-4" />
                     )}
-                    {isPreparingPrint ? "Preparing export..." : "Print or save PDF"}
+                    {isPreparingPrint ? "Preparing export..." : "Export PDF"}
                   </Button>
                   <Button
-                    className="rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90"
+                    className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90 sm:w-auto"
                     size="sm"
                     type="button"
                     variant="outline"
@@ -999,10 +2314,15 @@ function ProtectedExpenseEditor({
               </div>
 
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                  <EditorMetric
+                    label="Reference"
+                    value={displayExpenseReference}
+                    icon={<Hash className="size-4" />}
+                  />
                   <EditorMetric
                     label="Employee"
-                    value={employeeName || deriveDisplayName(session.userEmail)}
+                    value={printableEmployeeName}
                     icon={<UserRound className="size-4" />}
                   />
                   <EditorMetric
@@ -1022,16 +2342,21 @@ function ProtectedExpenseEditor({
                   />
                 </div>
 
-                <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     asChild
-                    className="rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90"
+                    className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90 sm:w-auto"
                     size="sm"
                     variant="outline"
                   >
                     <Link href="/dashboard">Back to dashboard</Link>
                   </Button>
-                  <Button className="rounded-full px-5" size="sm" type="button" onClick={addRow}>
+                  <Button
+                    className="w-full rounded-full px-5 sm:w-auto"
+                    size="sm"
+                    type="button"
+                    onClick={addRow}
+                  >
                     <Plus className="size-4" />
                     Create expense
                   </Button>
@@ -1059,7 +2384,7 @@ function ProtectedExpenseEditor({
                     </CardDescription>
                   </div>
 
-                  <Button className="rounded-full px-5" type="button" onClick={addRow}>
+                  <Button className="w-full rounded-full px-5 sm:w-auto" type="button" onClick={addRow}>
                     <Plus className="size-4" />
                     Add row
                   </Button>
@@ -1091,13 +2416,18 @@ function ProtectedExpenseEditor({
                           Saves automatically
                         </Badge>
                         <Badge className="rounded-full px-3 py-1" variant="outline">
-                          Prints extra receipt pages
+                          Exports extra receipt pages
                         </Badge>
                       </div>
                     </div>
 
                     {rows.map((row) => {
                       const rowNumber = rowNumberById.get(row.id) ?? row.id;
+                      const rowReference = formatExpenseLineReferenceCode(
+                        expenseDate,
+                        rowNumber,
+                        expenseCode,
+                      );
 
                       return (
                         <article
@@ -1115,7 +2445,7 @@ function ProtectedExpenseEditor({
                                   {findExpenseTypeLabel(row.typeId)}
                                 </Badge>
                                 <Badge className="rounded-full px-3 py-1" variant="outline">
-                                  Expense {rowNumber}
+                                  {rowReference}
                                 </Badge>
                                 {row.receipts.length > 0 ? (
                                   <Badge className="rounded-full px-3 py-1" variant="outline">
@@ -1210,7 +2540,7 @@ function ProtectedExpenseEditor({
                                 <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                                   <Button
                                     asChild
-                                    className="rounded-full border-white/10 bg-background/70 px-4 shadow-none hover:bg-background/85"
+                                    className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none hover:bg-background/85 sm:w-auto"
                                     size="sm"
                                     variant="outline"
                                   >
@@ -1234,7 +2564,7 @@ function ProtectedExpenseEditor({
 
                                   {row.receipts.length > 0 ? (
                                     <Button
-                                      className="rounded-full px-4"
+                                      className="w-full rounded-full px-4 sm:w-auto"
                                       size="sm"
                                       type="button"
                                       variant="ghost"
@@ -1246,7 +2576,7 @@ function ProtectedExpenseEditor({
                                   ) : null}
 
                                   <Button
-                                    className="rounded-full px-4 text-destructive hover:text-destructive"
+                                    className="w-full rounded-full px-4 text-destructive hover:text-destructive sm:w-auto"
                                     size="sm"
                                     type="button"
                                     variant="ghost"
@@ -1265,7 +2595,7 @@ function ProtectedExpenseEditor({
                               {row.receipts.length > 0 && row.isReceiptPreviewOpen ? (
                                 <ReceiptPreviewGrid
                                   receipts={row.receipts}
-                                  rowNumber={rowNumber}
+                                  rowReference={rowReference}
                                   onRemoveReceipt={(receipt) =>
                                     requestReceiptRemoval(row.id, receipt)
                                   }
@@ -1276,6 +2606,21 @@ function ProtectedExpenseEditor({
                         </article>
                       );
                     })}
+
+                    <div className="flex justify-center pt-1">
+                      <Button
+                        className="rounded-full border-white/10 bg-background/70 px-3 text-xs shadow-none hover:bg-background/85"
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
+                      >
+                        <ChevronUp className="size-3.5" />
+                        Go back to top
+                      </Button>
+                    </div>
                   </div>
                 )}
               </CardContent>
@@ -1285,13 +2630,13 @@ function ProtectedExpenseEditor({
               <Card className="premium-panel rounded-[2rem] border-border/60 py-0">
                 <CardHeader className="gap-3 border-b border-border/60 px-5 py-5">
                   <Badge className="rounded-full px-3 py-1" variant="secondary">
-                    Print setup
+                    Export setup
                   </Badge>
                   <CardTitle className="font-serif text-2xl tracking-tight sm:text-3xl">
                     Company and form details
                   </CardTitle>
                   <CardDescription className="text-sm leading-7">
-                    These details appear across the full printed form.
+                    These details appear across every exported page.
                   </CardDescription>
                 </CardHeader>
 
@@ -1301,7 +2646,7 @@ function ProtectedExpenseEditor({
                       Company for this form
                     </span>
                     <Select
-                      disabled={companies.length === 0}
+                      disabled={companies.length === 0 && !selectedCompanyId}
                       value={selectedCompanyId || EMPTY_COMPANY_VALUE}
                       onValueChange={handleCompanySelect}
                     >
@@ -1322,6 +2667,15 @@ function ProtectedExpenseEditor({
                         ))}
                       </SelectContent>
                     </Select>
+                    {exportValidationMessage ? (
+                      <p className="text-sm leading-6 text-destructive">
+                        {exportValidationMessage}
+                      </p>
+                    ) : (
+                      <p className="text-xs leading-6 text-muted-foreground">
+                        The selected company name and logo appear on every exported page.
+                      </p>
+                    )}
                   </label>
 
                   <div className="rounded-3xl border border-white/10 bg-background/65 p-4">
@@ -1349,16 +2703,16 @@ function ProtectedExpenseEditor({
                           {selectedCompanyName || "No company selected yet"}
                         </p>
                         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          The name and logo show in the printed header.
+                          The name and logo show in the PDF header.
                         </p>
                       </div>
                     </div>
                   </div>
 
-                  {companies.length === 0 ? (
+                  {companies.length === 0 && !selectedCompanyId && !hasStoredCompanySnapshot ? (
                     <div className="rounded-3xl border border-dashed border-white/10 bg-background/60 px-4 py-4 text-sm text-muted-foreground">
-                      Add a company in Company Headers if you want the printed form to
-                      include a branded header.
+                      Add a company in Company Headers before exporting. A saved logo is
+                      required for the PDF header.
                     </div>
                   ) : null}
 
@@ -1447,14 +2801,14 @@ function ProtectedExpenseEditor({
 
                   <div className="rounded-3xl border border-white/10 bg-background/65 p-4">
                     <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                      Print status
+                      Export status
                     </p>
                     <p className="mt-2 text-sm text-foreground">
                       {isPreparingPrint
-                        ? "Preparing your receipt photos for print..."
+                        ? "Preparing your receipt photos for PDF..."
                         : lastPrintedAt
-                          ? `Last prepared ${lastPrintedAt}`
-                          : "Not printed yet"}
+                          ? `Last exported ${lastPrintedAt}`
+                          : "No PDF exported yet"}
                     </p>
                     {printError ? (
                       <p className="mt-2 text-sm leading-6 text-destructive">{printError}</p>
@@ -1467,15 +2821,16 @@ function ProtectedExpenseEditor({
                         <Globe2 className="size-4" />
                       </span>
                       <p className="text-sm leading-7 text-foreground">
-                        The printed form stays on one signature page, then adds up to four
-                        receipt photos on each extra page.
+                        The PDF fits up to fifteen expense lines per page, keeps the same
+                        layout on continuation pages, and adds up to four receipt photos
+                        on each extra page.
                       </p>
                     </div>
                   </div>
 
                   <Button
                     className="h-11 w-full rounded-2xl"
-                    disabled={isPreparingPrint}
+                    disabled={isPreparingPrint || !canExport}
                     type="button"
                     onClick={() => {
                       void handlePrint();
@@ -1486,7 +2841,7 @@ function ProtectedExpenseEditor({
                     ) : (
                       <Printer className="size-4" />
                     )}
-                    {isPreparingPrint ? "Preparing your export..." : "Print this day sheet"}
+                    {isPreparingPrint ? "Preparing your export..." : "Export this day sheet"}
                   </Button>
                 </CardContent>
               </Card>
@@ -1499,7 +2854,7 @@ function ProtectedExpenseEditor({
                     </span>
                     <div>
                       <p className="text-sm font-medium text-foreground">
-                        Tip for a cleaner printout
+                        Tip for a cleaner PDF
                       </p>
                       <p className="text-sm text-muted-foreground">
                         Keep each note short and clear so the form stays easy to review.
@@ -1512,183 +2867,109 @@ function ProtectedExpenseEditor({
           </main>
         </section>
 
-        <section className="print-only print-card print-sheet rounded-none bg-white p-3 text-black">
-          <div className="p-0">
-            <div className="flex items-start gap-3 border-b border-black/25 pb-3">
-              <div className="flex h-[4.5rem] w-[4.5rem] shrink-0 items-center justify-center overflow-hidden rounded-[0.85rem]">
-                {selectedCompanyLogoUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element -- eager loading keeps the logo available during print export.
-                  <img
-                    alt={selectedCompanyName || exportCopy.companyPending}
-                    className="h-full w-full object-contain"
-                    decoding="sync"
-                    loading="eager"
-                    src={selectedCompanyLogoUrl}
-                  />
-                ) : (
-                  <span className="text-[11px] font-medium uppercase tracking-[0.24em] text-black/45">
-                    Logo
-                  </span>
+        <Dialog
+          open={isExportPreviewOpen}
+          onOpenChange={(open) => {
+            if (isSavingPdf) {
+              return;
+            }
+
+            setIsExportPreviewOpen(open);
+          }}
+        >
+          <DialogContent
+            className="flex h-[100dvh] w-screen max-w-screen flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-[calc(100vh-2rem)] sm:w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-2rem)] sm:rounded-[2rem] sm:border sm:border-border/60 2xl:max-w-[1600px]"
+            showCloseButton={!isSavingPdf}
+          >
+            <DialogHeader className="border-b border-border/60 bg-[linear-gradient(135deg,rgba(255,255,255,0.06),rgba(255,255,255,0.02))] px-3 py-3 sm:px-6 sm:py-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <DialogTitle className="pr-10 font-serif text-[1.75rem] tracking-tight sm:pr-0 sm:text-3xl lg:text-4xl">
+                    Export preview
+                  </DialogTitle>
+                  <DialogDescription className="mt-2 max-w-2xl text-sm leading-6 sm:leading-7">
+                    Review the full PDF before saving. This preview is scrollable through
+                    every expense and receipt page.
+                  </DialogDescription>
+                </div>
+
+                <div className="flex flex-wrap gap-2 lg:justify-end">
+                  <Badge className="rounded-full px-3 py-1" variant="secondary">
+                    {exportPreviewPages.length} page
+                    {exportPreviewPages.length === 1 ? "" : "s"}
+                  </Badge>
+                  <Badge className="rounded-full px-3 py-1" variant="outline">
+                    {displayExpenseReference}
+                  </Badge>
+                </div>
+              </div>
+            </DialogHeader>
+
+            <div className="border-b border-border/60 bg-background/60 px-3 py-2 text-xs text-muted-foreground sm:px-6 sm:py-3 sm:text-sm">
+              Confirm to open your system save prompt and write the PDF directly from this
+              preview.
+            </div>
+
+            <div
+              className="export-preview-shell flex-1 overflow-auto bg-[radial-gradient(circle_at_top,rgba(34,197,94,0.08),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_36%)] px-2 py-2 sm:px-4 sm:py-4 lg:px-6"
+              ref={exportPreviewViewportRef}
+            >
+              <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 sm:gap-6">
+                {exportPreviewPages.map((page) =>
+                  isMobileExportPreview ? (
+                    <MobileExportPreviewPageCard
+                      key={page.key}
+                      label={page.label}
+                      scale={exportPreviewScale}
+                    >
+                      {page.node}
+                    </MobileExportPreviewPageCard>
+                  ) : (
+                    <DesktopExportPreviewPageCard key={page.key} scale={exportPreviewScale}>
+                      {page.node}
+                    </DesktopExportPreviewPageCard>
+                  ),
                 )}
               </div>
+            </div>
 
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
-                  {exportCopy.companyCaption}
+            <DialogFooter className="border-t border-border/60 bg-background/80 px-3 py-3 sm:px-6 sm:py-4">
+              {printError ? (
+                <p className="mr-auto max-w-md text-sm leading-6 text-destructive">
+                  {printError}
                 </p>
-                <h2 className="mt-1 line-clamp-2 font-serif text-[1.22rem] leading-tight">
-                  {selectedCompanyName || exportCopy.companyPending}
-                </h2>
-                <p className="mt-1 text-[12px] text-black/65">{exportCopy.formSubtitle}</p>
-                <p className="mt-1.5 text-[14px] font-semibold">{exportCopy.formTitle}</p>
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-              <InfoLine
-                label={exportCopy.date}
-                value={formatExportDate(expenseDate, exportLanguage)}
-              />
-              <InfoLine
-                label={exportCopy.employee}
-                value={employeeName || deriveDisplayName(session.userEmail)}
-              />
-            </div>
-
-            <div className="mt-2.5 border-b border-black/15 pb-2">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-black/55">
-                {exportCopy.note}
-              </p>
-              <p className="mt-1 line-clamp-2 text-[12px] leading-5">
-                {note || exportCopy.noteFallback}
-              </p>
-            </div>
-
-            {populatedRows.length === 0 ? (
-              <div className="mt-3 px-1 py-2 text-sm text-black/60">
-                {exportCopy.noExpenses}
-              </div>
-            ) : (
-              <div className="mt-3 overflow-hidden border border-black/40">
-                <div className="grid grid-cols-[0.7fr_1.85fr_3.15fr_1.35fr] bg-black/[0.035] text-[9px] font-semibold uppercase tracking-[0.12em] text-black/85">
-                  <div className="border-r border-b border-black/35 px-2 py-1.5">
-                    {exportCopy.line}
-                  </div>
-                  <div className="border-r border-b border-black/35 px-2 py-1.5">
-                    {exportCopy.expenseType}
-                  </div>
-                  <div className="border-r border-b border-black/35 px-2 py-1.5">
-                    {exportCopy.expenseNote}
-                  </div>
-                  <div className="border-b border-black/35 px-2 py-1.5 text-right">
-                    {exportCopy.amount}
-                  </div>
-                </div>
-
-                {printableFormRows.map(({ lineNumber, row }) => (
-                  <div
-                    className="grid grid-cols-[0.7fr_1.85fr_3.15fr_1.35fr] text-[11px] text-black"
-                    key={row.id}
-                  >
-                    <div className="border-r border-b border-black/25 px-2 py-2 text-center font-medium">
-                      {lineNumber}
-                    </div>
-                    <div className="border-r border-b border-black/25 px-2 py-2">
-                      <p className="line-clamp-2 font-medium leading-[1.15rem]">
-                        {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
-                      </p>
-                    </div>
-                    <div className="border-r border-b border-black/25 px-2 py-2">
-                      <p className="line-clamp-2 leading-[1.15rem] text-black/78">
-                        {row.remark || exportCopy.emptyRemark}
-                      </p>
-                    </div>
-                    <div className="border-b border-black/25 px-2 py-2 text-right font-medium">
-                      {row.amount.trim()
-                        ? formatPrintAmount(parseAmount(row.amount), exportLanguage)
-                        : "-"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {overflowRows.length > 0 ? (
-              <div className="mt-2 px-0.5 text-[10px] leading-[1.125rem] text-black/75">
-                <span className="font-medium">
-                  {formatOverflowRowsSummary(overflowRows.length, exportLanguage)}
-                </span>
-                <span className="ml-2 font-semibold">
-                  {formatPrintAmount(overflowAmount, exportLanguage)}
-                </span>
-              </div>
-            ) : null}
-
-            <div className="mt-2.5 flex items-center justify-end border-t border-black/25 px-0.5 py-2 text-[12px]">
-              <span className="font-medium">{exportCopy.total}:</span>
-              <span className="ml-3 text-sm font-semibold">
-                {formatPrintAmount(totalAmount, exportLanguage)}
-              </span>
-            </div>
-
-            <div className="mt-5 grid grid-cols-3 gap-3 text-[10px]">
-              {exportCopy.signatures.map((label) => (
-                <div className="text-center" key={label}>
-                  <p className="font-semibold tracking-[0.02em]">{exportCopy.signatureHint}</p>
-                  <div className="mt-7 border-b border-black/75" />
-                  <p className="mt-2 text-black/80">{label}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {receiptPages.map((pageEntries, pageIndex) => (
-          <section
-            className="print-only print-card print-sheet mt-3 rounded-none bg-white p-3 text-black"
-            key={`receipt-page-${pageIndex + 1}`}
-            style={{ breakBefore: "page" }}
-          >
-            <div className="p-0">
-              <div className="border-b border-black/25 pb-2">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
-                  {exportCopy.receiptsSheetTitle}
+              ) : (
+                <p className="mr-auto text-sm text-muted-foreground">
+                  The saved PDF matches this preview layout.
                 </p>
-                <p className="mt-1.5 text-[12px] text-black/65">
-                  {formatReceiptPageCounter(pageIndex + 1, receiptPages.length, exportLanguage)}
-                </p>
-              </div>
-
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                {pageEntries.map((entry) => (
-                  <article className="p-0" key={entry.key}>
-                    <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-black/55">
-                      {entry.label}
-                    </p>
-                    <p className="mt-1 line-clamp-1 text-[11px] text-black/65">
-                      {formatExportExpenseTypeLabel(entry.row.typeId, exportLanguage)}
-                    </p>
-
-                    <div className="mt-2 flex h-48 items-center justify-center overflow-hidden border border-black/25 p-2">
-                      {/* eslint-disable-next-line @next/next/no-img-element -- eager loading avoids missing receipt images in printed output. */}
-                      <img
-                        alt={entry.label}
-                        className="h-full w-full object-contain"
-                        decoding="sync"
-                        loading="eager"
-                        src={entry.receipt.previewUrl}
-                      />
-                    </div>
-
-                    <p className="mt-1.5 line-clamp-1 text-[10px] text-black/60">
-                      {entry.receipt.name}
-                    </p>
-                  </article>
-                ))}
-              </div>
-            </div>
-          </section>
-        ))}
+              )}
+              <Button
+                className="w-full rounded-full sm:w-auto"
+                disabled={isSavingPdf}
+                type="button"
+                variant="outline"
+                onClick={() => setIsExportPreviewOpen(false)}
+              >
+                Close
+              </Button>
+              <Button
+                className="w-full rounded-full px-5 sm:w-auto"
+                disabled={isSavingPdf}
+                type="button"
+                onClick={() => {
+                  void handleConfirmExport();
+                }}
+              >
+                {isSavingPdf ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : (
+                  <Printer className="size-4" />
+                )}
+                {isSavingPdf ? "Saving PDF..." : "Confirm and save PDF"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {isPreparingPrint ? (
           <div className="screen-only fixed inset-0 z-40 flex items-center justify-center bg-background/75 px-4 backdrop-blur-md">
@@ -1701,7 +2982,7 @@ function ProtectedExpenseEditor({
               </p>
               <p className="mt-3 text-sm leading-7 text-muted-foreground">
                 We&apos;re loading the receipt photos first so they appear properly in the
-                printed file.
+                exported file.
               </p>
               <div className="mt-6 flex items-center justify-center gap-2">
                 <span className="size-2 rounded-full bg-primary/90 animate-[pulse_1.4s_ease-in-out_infinite]" />
@@ -1733,9 +3014,9 @@ function ProtectedExpenseEditor({
               </AlertDialogTitle>
               <AlertDialogDescription className="leading-7">
                 {pendingRemoval?.kind === "receipt"
-                  ? `This will remove "${pendingRemoval.receiptName}" from expense ${pendingRemoval.rowNumber}.`
+                  ? `This will remove "${pendingRemoval.receiptName}" from ${pendingRemoval.rowReference}.`
                   : pendingRemoval
-                    ? `This will remove expense ${pendingRemoval.rowNumber} and all of its receipt photos.`
+                    ? `This will remove ${pendingRemoval.rowReference} and all of its receipt photos.`
                     : "This action cannot be undone on this page."}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -1753,6 +3034,249 @@ function ProtectedExpenseEditor({
         </AlertDialog>
       </div>
     </div>
+  );
+}
+
+function PrintExpenseFormPage({
+  currentPage,
+  displayExpenseReference,
+  employeeName,
+  expenseDate,
+  exportCopy,
+  exportLanguage,
+  note,
+  rows,
+  selectedCompanyLogoUrl,
+  selectedCompanyName,
+  showFooter,
+  totalAmount,
+  totalPages,
+}: {
+  currentPage: number;
+  displayExpenseReference: string;
+  employeeName: string;
+  expenseDate: string;
+  exportCopy: ExportCopy;
+  exportLanguage: ExportLanguage;
+  note: string;
+  rows: PrintableFormRow[];
+  selectedCompanyLogoUrl: string;
+  selectedCompanyName: string;
+  showFooter: boolean;
+  totalAmount: number;
+  totalPages: number;
+}) {
+  return (
+    <section
+      className="export-sheet print-card rounded-none bg-white text-black"
+      data-export-page
+    >
+      <div className="flex h-full flex-col p-0">
+        <div className="flex items-start gap-3 border-b border-black/25 pb-2.5">
+          <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[0.85rem]">
+            {selectedCompanyLogoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- eager loading keeps the logo available during PDF export.
+              <img
+                alt={selectedCompanyName || exportCopy.companyPending}
+                className="h-full w-full object-contain"
+                crossOrigin="anonymous"
+                decoding="sync"
+                loading="eager"
+                src={selectedCompanyLogoUrl}
+              />
+            ) : (
+              <span className="text-[11px] font-medium uppercase tracking-[0.24em] text-black/45">
+                Logo
+              </span>
+            )}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
+                  {exportCopy.companyCaption}
+                </p>
+                <h2 className="mt-1 line-clamp-2 font-serif text-[1.14rem] leading-tight">
+                  {selectedCompanyName || exportCopy.companyPending}
+                </h2>
+                {exportCopy.formSubtitle ? (
+                  <p className="mt-0.5 text-[11px] text-black/65">{exportCopy.formSubtitle}</p>
+                ) : null}
+                <p className={exportCopy.formSubtitle ? "mt-1 text-[13px] font-semibold" : "mt-2 text-[13px] font-semibold"}>
+                  {exportCopy.formTitle}
+                </p>
+              </div>
+
+              {totalPages > 1 ? (
+                <p className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.18em] text-black/55">
+                  {formatFormPageCounter(currentPage, totalPages, exportLanguage)}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-2.5 grid grid-cols-2 gap-2.5 text-sm">
+          <InfoLine
+            label={exportCopy.date}
+            value={formatExportDate(expenseDate, exportLanguage)}
+          />
+          <InfoLine label={exportCopy.employee} value={employeeName} />
+          <InfoLine label={exportCopy.reference} value={displayExpenseReference} />
+        </div>
+
+        <div className="mt-2 border-b border-black/15 pb-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-black/55">
+            {exportCopy.note}
+          </p>
+          <p className="mt-1 line-clamp-2 text-[11px] leading-[1.05rem]">
+            {note || exportCopy.noteFallback}
+          </p>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="mt-2.5 px-1 py-2 text-sm text-black/60">{exportCopy.noExpenses}</div>
+        ) : (
+          <div className="mt-2.5 overflow-hidden border border-black/40">
+            <div
+              className="grid bg-black/[0.035] text-[8px] font-semibold uppercase tracking-[0.12em] text-black/85"
+              style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
+            >
+              <div className="border-r border-b border-black/35 px-2 py-1.5">
+                {exportCopy.line}
+              </div>
+              <div className="border-r border-b border-black/35 px-2 py-1.5">
+                {exportCopy.expenseType}
+              </div>
+              <div className="border-r border-b border-black/35 px-2 py-1.5">
+                {exportCopy.expenseNote}
+              </div>
+              <div className="border-b border-black/35 px-2 py-1.5 text-right">
+                {exportCopy.amount}
+              </div>
+            </div>
+
+            {rows.map(({ lineNumber, row }) => (
+              <div
+                className="grid text-[10px] text-black"
+                key={row.id}
+                style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
+              >
+                <div className="border-r border-b border-black/25 px-2 py-1.5 text-[8px] font-semibold leading-[0.92rem] [overflow-wrap:anywhere]">
+                  {formatExpenseLineReferenceCode(
+                    expenseDate,
+                    lineNumber,
+                    displayExpenseReference,
+                  )}
+                </div>
+                <div className="border-r border-b border-black/25 px-2 py-1.5">
+                  <p className="line-clamp-2 font-medium leading-[1rem]">
+                    {formatExportExpenseTypeLabel(row.typeId, exportLanguage)}
+                  </p>
+                </div>
+                <div className="border-r border-b border-black/25 px-2 py-1.5">
+                  <p className="line-clamp-2 leading-[1rem] text-black/78">
+                    {row.remark || exportCopy.emptyRemark}
+                  </p>
+                </div>
+                <div className="border-b border-black/25 px-2 py-1.5 text-right font-medium">
+                  {row.amount.trim()
+                    ? formatPrintAmount(parseAmount(row.amount), exportLanguage)
+                    : "-"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {showFooter ? (
+          <div className="mt-auto pt-5">
+            <div className="mt-2 flex items-center justify-end border-t border-black/25 px-0.5 py-1.5 text-[12px]">
+              <span className="font-medium">{exportCopy.total}:</span>
+              <span className="ml-3 text-sm font-semibold">
+                {formatPrintAmount(totalAmount, exportLanguage)}
+              </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-3 text-[9px]">
+              {exportCopy.signatures.map((label) => (
+                <div className="text-center" key={label}>
+                  <p className="font-semibold tracking-[0.02em]">{exportCopy.signatureHint}</p>
+                  <div className="mt-5 border-b border-black/75" />
+                  <p className="mt-2 text-black/80">{label}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function ReceiptExportPage({
+  assetUrlMap,
+  entries,
+  exportCopy,
+  exportLanguage,
+  pageIndex,
+  totalPages,
+}: {
+  assetUrlMap: Record<string, string>;
+  entries: PrintableReceiptEntry[];
+  exportCopy: ExportCopy;
+  exportLanguage: ExportLanguage;
+  pageIndex: number;
+  totalPages: number;
+}) {
+  return (
+    <section className="export-sheet print-card rounded-none bg-white text-black" data-export-page>
+      <div className="p-0">
+        <div className="border-b border-black/25 pb-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
+            {exportCopy.receiptsSheetTitle}
+          </p>
+          <p className="mt-1.5 text-[12px] text-black/65">
+            {formatReceiptPageCounter(pageIndex + 1, totalPages, exportLanguage)}
+          </p>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          {entries.map((entry) => {
+            const receiptPreviewUrl =
+              assetUrlMap[entry.receipt.previewUrl] ?? entry.receipt.previewUrl;
+
+            return (
+              <article className="p-0" key={entry.key}>
+                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-black/55">
+                  {entry.label}
+                </p>
+                <p className="mt-1 line-clamp-1 text-[11px] text-black/65">
+                  {formatExportExpenseTypeLabel(entry.row.typeId, exportLanguage)}
+                </p>
+
+                <div className="mt-2 flex h-48 items-center justify-center overflow-hidden border border-black/25 p-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- eager loading avoids missing receipt images in exported PDF output. */}
+                  <img
+                    alt={entry.label}
+                    className="h-full w-full object-contain"
+                    crossOrigin="anonymous"
+                    decoding="sync"
+                    loading="eager"
+                    src={receiptPreviewUrl}
+                  />
+                </div>
+
+                <p className="mt-1.5 line-clamp-1 text-[10px] text-black/60">
+                  {entry.receipt.name}
+                </p>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1786,12 +3310,16 @@ function formatPrintAmount(amount: number, language: ExportLanguage) {
   return language === "th" ? `${formattedNumber} บาท` : `${formattedNumber} THB`;
 }
 
-function formatOverflowRowsSummary(count: number, language: ExportLanguage) {
+function formatFormPageCounter(
+  currentPage: number,
+  totalPages: number,
+  language: ExportLanguage,
+) {
   if (language === "th") {
-    return `รวมอีก ${count} รายการในยอดรวมด้านล่าง`;
+    return `หน้าฟอร์ม ${currentPage} จาก ${totalPages}`;
   }
 
-  return `${count} more expense ${count === 1 ? "line is" : "lines are"} included in the total below`;
+  return `Form page ${currentPage} of ${totalPages}`;
 }
 
 function formatReceiptPageCounter(
@@ -1930,17 +3458,17 @@ function InfoLine({
 function ReceiptPreviewGrid({
   onRemoveReceipt,
   receipts,
-  rowNumber,
+  rowReference,
 }: {
   onRemoveReceipt: (receipt: ReceiptDraft) => void;
   receipts: ReceiptDraft[];
-  rowNumber: number;
+  rowReference: string;
 }) {
   return (
     <div className="rounded-[1.6rem] border border-white/10 bg-background/60 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-sm font-medium text-foreground">Receipt photos for expense {rowNumber}</p>
+          <p className="text-sm font-medium text-foreground">Receipt photos for {rowReference}</p>
           <p className="text-xs text-muted-foreground">
             Remove any photo you no longer want on the export.
           </p>
