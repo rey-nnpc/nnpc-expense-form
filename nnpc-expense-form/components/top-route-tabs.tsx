@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-type RouteSection = "expenses" | "companies";
+type RouteSection = "expenses" | "companies" | "admin";
 
 export function TopRouteTabs({
   activeSection,
@@ -25,12 +25,17 @@ export function TopRouteTabs({
       key: "companies",
       label: "Company Headers",
     },
+    {
+      href: "/admin",
+      key: "admin",
+      label: "Admin",
+    },
   ];
 
   return (
     <nav
       aria-label="Primary"
-      className="mt-5 grid w-full grid-cols-2 gap-1.5 rounded-[1.2rem] border border-white/10 bg-background/55 p-1.5 backdrop-blur-xl sm:flex sm:flex-wrap sm:items-center sm:gap-2 sm:rounded-[1.75rem] sm:p-2"
+      className="mt-5 grid w-full grid-cols-3 gap-1.5 rounded-[1.2rem] border border-white/10 bg-background/55 p-1.5 backdrop-blur-xl sm:flex sm:flex-wrap sm:items-center sm:gap-2 sm:rounded-[1.75rem] sm:p-2"
     >
       {tabs.map((tab) => (
         <Link
