@@ -135,8 +135,8 @@ function ProtectedAdminUserDetail({
     <div className="relative min-h-screen bg-background text-foreground">
       <div className="fixed inset-0 bg-background" />
 
-      <div className="relative z-10 mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="relative z-10 mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
+        <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h1 className="font-serif text-3xl tracking-tight sm:text-4xl">
               Admin Expenses
@@ -144,7 +144,7 @@ function ProtectedAdminUserDetail({
             <p className="mt-1 truncate text-sm text-muted-foreground">{session.userEmail}</p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5 sm:justify-end">
             <ThemeSettingsSheet userEmail={session.userEmail} />
             <Button type="button" variant="outline" onClick={() => void logout()}>
               <LogOut className="size-4" />
@@ -155,7 +155,7 @@ function ProtectedAdminUserDetail({
 
         <TopRouteTabs activeSection="admin" />
 
-        <div className="mt-6 flex flex-wrap items-center gap-3">
+        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <Button asChild variant="outline">
             <Link href={`/admin?period=${encodeURIComponent(activePeriod)}`}>
               <ArrowLeft className="size-4" />
@@ -163,8 +163,11 @@ function ProtectedAdminUserDetail({
             </Link>
           </Button>
 
-          <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={handlePeriodSubmit}>
-            <label className="flex min-w-[12rem] flex-col gap-1.5 text-sm">
+          <form
+            className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-end"
+            onSubmit={handlePeriodSubmit}
+          >
+            <label className="flex w-full flex-col gap-1.5 text-sm sm:w-[13rem]">
               <span className="text-muted-foreground">Month</span>
               <Input
                 className="h-10 bg-background"
@@ -173,12 +176,17 @@ function ProtectedAdminUserDetail({
                 onChange={(event) => setDraftPeriod(event.target.value)}
               />
             </label>
-            <Button type="submit">Update</Button>
+            <Button className="sm:min-w-[7rem]" type="submit">
+              Update
+            </Button>
           </form>
         </div>
 
         {message ? (
-          <Alert className="mt-4 border-border bg-card" variant={message.tone === "error" ? "destructive" : "default"}>
+          <Alert
+            className="mt-5 border-border bg-card"
+            variant={message.tone === "error" ? "destructive" : "default"}
+          >
             <AlertTitle>
               {message.tone === "error" ? "Admin Detail Unavailable" : "Admin Detail"}
             </AlertTitle>
@@ -186,9 +194,9 @@ function ProtectedAdminUserDetail({
           </Alert>
         ) : null}
 
-        <Card className="mt-4 border-border bg-card py-0 shadow-none">
-          <CardHeader className="gap-3 border-b border-border px-5 py-5 sm:px-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <Card className="mt-5 border-border bg-card py-0 shadow-none">
+          <CardHeader className="gap-4 border-b border-border px-5 py-6 sm:px-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <CardTitle className="font-serif text-2xl tracking-tight">
                   {selectedUser ? selectedUser.displayName : "User Detail"}
@@ -201,12 +209,14 @@ function ProtectedAdminUserDetail({
               </div>
 
               {selectedUser ? (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 sm:justify-end">
                   <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
-                    {dashboard?.periodLabel ?? activePeriod}: {formatCurrency(selectedUser.monthlyExpense)}
+                    {dashboard?.periodLabel ?? activePeriod}:{" "}
+                    {formatCurrency(selectedUser.monthlyExpense)}
                   </Badge>
                   <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
-                    {dashboard?.selectedYear ?? Number(activePeriod.slice(0, 4))}: {formatCurrency(selectedUser.yearlyExpense)}
+                    {dashboard?.selectedYear ?? Number(activePeriod.slice(0, 4))}:{" "}
+                    {formatCurrency(selectedUser.yearlyExpense)}
                   </Badge>
                 </div>
               ) : null}
@@ -251,8 +261,8 @@ function UserDetailContent({
 }) {
   return (
     <div className="space-y-0">
-      <div className="grid gap-3 border-b border-border px-5 py-5 sm:grid-cols-3 sm:px-6">
-        <div className="rounded-lg border border-border bg-card px-4 py-4">
+      <div className="grid gap-4 border-b border-border px-5 py-6 sm:grid-cols-3 sm:px-6">
+        <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
           <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
             Month Total
           </div>
@@ -262,7 +272,7 @@ function UserDetailContent({
           <p className="mt-1 text-sm text-muted-foreground">{periodLabel}</p>
         </div>
 
-        <div className="rounded-lg border border-border bg-card px-4 py-4">
+        <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
           <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
             Year Total
           </div>
@@ -272,7 +282,7 @@ function UserDetailContent({
           <p className="mt-1 text-sm text-muted-foreground">{selectedYear}</p>
         </div>
 
-        <div className="rounded-lg border border-border bg-card px-4 py-4">
+        <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
           <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
             Expense Days
           </div>
@@ -289,23 +299,23 @@ function UserDetailContent({
         <Table>
           <TableHeader>
             <TableRow className="bg-muted/40">
-              <TableHead className="px-4 py-3 sm:px-6">Date</TableHead>
-              <TableHead className="px-4 py-3">Expense Code</TableHead>
-              <TableHead className="px-4 py-3">Employee</TableHead>
-              <TableHead className="px-4 py-3">Company</TableHead>
-              <TableHead className="px-4 py-3 text-right sm:px-6">Total</TableHead>
+              <TableHead className="w-[14rem] px-4 py-3 sm:px-6">Date</TableHead>
+              <TableHead className="w-[12rem] px-4 py-3">Expense Code</TableHead>
+              <TableHead className="w-[14rem] px-4 py-3">Employee</TableHead>
+              <TableHead className="w-[16rem] px-4 py-3">Company</TableHead>
+              <TableHead className="w-[10rem] px-4 py-3 text-right sm:px-6">Total</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {selectedUser.detailRows.map((detail) => (
               <TableRow key={detail.reportId}>
-                <TableCell className="px-4 py-4 sm:px-6">
+                <TableCell className="px-4 py-4 align-middle sm:px-6">
                   {formatDisplayDate(detail.date)}
                 </TableCell>
-                <TableCell className="px-4 py-4">{detail.expenseCode}</TableCell>
-                <TableCell className="px-4 py-4">{detail.employeeName}</TableCell>
-                <TableCell className="px-4 py-4">{detail.companyName}</TableCell>
-                <TableCell className="px-4 py-4 text-right font-medium sm:px-6">
+                <TableCell className="px-4 py-4 align-middle">{detail.expenseCode}</TableCell>
+                <TableCell className="px-4 py-4 align-middle">{detail.employeeName}</TableCell>
+                <TableCell className="px-4 py-4 align-middle">{detail.companyName}</TableCell>
+                <TableCell className="px-4 py-4 align-middle text-right font-medium tabular-nums sm:px-6">
                   {formatCurrency(detail.totalAmount)}
                 </TableCell>
               </TableRow>

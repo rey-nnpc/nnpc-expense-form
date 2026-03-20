@@ -125,8 +125,8 @@ function ProtectedAdminDashboard({
     <div className="relative min-h-screen bg-background text-foreground">
       <div className="fixed inset-0 bg-background" />
 
-      <div className="relative z-10 mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="relative z-10 mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
+        <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <h1 className="font-serif text-3xl tracking-tight sm:text-4xl">
               Admin Expenses
@@ -134,7 +134,7 @@ function ProtectedAdminDashboard({
             <p className="mt-1 truncate text-sm text-muted-foreground">{session.userEmail}</p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5 sm:justify-end">
             <ThemeSettingsSheet userEmail={session.userEmail} />
             <Button type="button" variant="outline" onClick={() => void logout()}>
               <LogOut className="size-4" />
@@ -146,7 +146,7 @@ function ProtectedAdminDashboard({
         <TopRouteTabs activeSection="admin" />
 
         <Card className="mt-6 border-border bg-card py-0 shadow-none">
-          <CardHeader className="gap-3 border-b border-border px-5 py-5 sm:px-6">
+          <CardHeader className="gap-4 border-b border-border px-5 py-6 sm:px-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <CardTitle className="font-serif text-2xl tracking-tight">
@@ -157,8 +157,11 @@ function ProtectedAdminDashboard({
                 </CardDescription>
               </div>
 
-              <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={handlePeriodSubmit}>
-                <label className="flex min-w-[12rem] flex-col gap-1.5 text-sm">
+              <form
+                className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-end"
+                onSubmit={handlePeriodSubmit}
+              >
+                <label className="flex w-full flex-col gap-1.5 text-sm sm:w-[13rem]">
                   <span className="text-muted-foreground">Month</span>
                   <Input
                     className="h-10 bg-background"
@@ -167,14 +170,16 @@ function ProtectedAdminDashboard({
                     onChange={(event) => setDraftPeriod(event.target.value)}
                   />
                 </label>
-                <Button type="submit">Update</Button>
+                <Button className="sm:min-w-[7rem]" type="submit">
+                  Update
+                </Button>
               </form>
             </div>
           </CardHeader>
 
           {dashboard ? (
-            <CardContent className="grid gap-3 px-5 py-5 sm:grid-cols-3 sm:px-6">
-              <div className="rounded-lg border border-border bg-card px-4 py-4">
+            <CardContent className="grid gap-4 px-5 py-6 sm:grid-cols-3 sm:px-6">
+              <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
                 <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
                   Users
                 </div>
@@ -184,7 +189,7 @@ function ProtectedAdminDashboard({
                 </p>
               </div>
 
-              <div className="rounded-lg border border-border bg-card px-4 py-4">
+              <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
                 <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
                   Month Total
                 </div>
@@ -194,7 +199,7 @@ function ProtectedAdminDashboard({
                 <p className="mt-1 text-sm text-muted-foreground">{dashboard.periodLabel}</p>
               </div>
 
-              <div className="rounded-lg border border-border bg-card px-4 py-4">
+              <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
                 <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
                   Year Total
                 </div>
@@ -208,7 +213,10 @@ function ProtectedAdminDashboard({
         </Card>
 
         {message ? (
-          <Alert className="mt-4 border-border bg-card" variant={message.tone === "error" ? "destructive" : "default"}>
+          <Alert
+            className="mt-5 border-border bg-card"
+            variant={message.tone === "error" ? "destructive" : "default"}
+          >
             <AlertTitle>
               {message.tone === "error" ? "Admin Dashboard Unavailable" : "Admin Dashboard"}
             </AlertTitle>
@@ -216,7 +224,7 @@ function ProtectedAdminDashboard({
           </Alert>
         ) : null}
 
-        <Card className="mt-4 border-border bg-card py-0 shadow-none">
+        <Card className="mt-5 border-border bg-card py-0 shadow-none">
           <CardContent className="px-0 py-0">
             {isLoadingDashboard ? (
               <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
@@ -230,15 +238,17 @@ function ProtectedAdminDashboard({
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/40">
-                    <TableHead className="px-4 py-3 sm:px-6">User</TableHead>
-                    <TableHead className="px-4 py-3">Email</TableHead>
-                    <TableHead className="px-4 py-3 text-right">Status</TableHead>
-                    <TableHead className="px-4 py-3 text-right">{dashboard.periodLabel}</TableHead>
-                    <TableHead className="px-4 py-3 text-right">
+                    <TableHead className="w-[17rem] px-4 py-3 sm:px-6">User</TableHead>
+                    <TableHead className="w-[18rem] px-4 py-3">Email</TableHead>
+                    <TableHead className="w-[8rem] px-4 py-3 text-right">Status</TableHead>
+                    <TableHead className="w-[10rem] px-4 py-3 text-right">
+                      {dashboard.periodLabel}
+                    </TableHead>
+                    <TableHead className="w-[10rem] px-4 py-3 text-right">
                       {dashboard.selectedYear} Total
                     </TableHead>
-                    <TableHead className="px-4 py-3 text-right">Days</TableHead>
-                    <TableHead className="px-4 py-3 text-right sm:px-6">Open</TableHead>
+                    <TableHead className="w-[6rem] px-4 py-3 text-right">Days</TableHead>
+                    <TableHead className="w-[7rem] px-4 py-3 text-right sm:px-6">Open</TableHead>
                   </TableRow>
                 </TableHeader>
 
@@ -252,32 +262,36 @@ function ProtectedAdminDashboard({
                   ) : (
                     dashboard.users.map((user) => (
                       <TableRow key={user.userId}>
-                        <TableCell className="px-4 py-4 font-medium whitespace-normal sm:px-6">
+                        <TableCell className="px-4 py-4 font-medium align-middle whitespace-normal sm:px-6">
                           {user.displayName}
                         </TableCell>
-                        <TableCell className="px-4 py-4 text-muted-foreground whitespace-normal">
+                        <TableCell className="px-4 py-4 align-middle text-muted-foreground whitespace-normal">
                           {user.email}
                         </TableCell>
-                        <TableCell className="px-4 py-4 text-right">
-                          <Badge
-                            className="rounded-full px-2.5 py-0.5"
-                            variant={user.monthDaysWithExpenses > 0 ? "default" : "outline"}
-                          >
-                            {user.monthDaysWithExpenses > 0 ? "Active" : "No Spend"}
-                          </Badge>
+                        <TableCell className="px-4 py-4 align-middle text-right">
+                          <div className="flex justify-end">
+                            <Badge
+                              className="rounded-full px-2.5 py-0.5"
+                              variant={user.monthDaysWithExpenses > 0 ? "default" : "outline"}
+                            >
+                              {user.monthDaysWithExpenses > 0 ? "Active" : "No Spend"}
+                            </Badge>
+                          </div>
                         </TableCell>
-                        <TableCell className="px-4 py-4 text-right font-medium">
+                        <TableCell className="px-4 py-4 align-middle text-right font-medium tabular-nums">
                           {formatCurrency(user.monthlyExpense)}
                         </TableCell>
-                        <TableCell className="px-4 py-4 text-right font-medium">
+                        <TableCell className="px-4 py-4 align-middle text-right font-medium tabular-nums">
                           {formatCurrency(user.yearlyExpense)}
                         </TableCell>
-                        <TableCell className="px-4 py-4 text-right">
+                        <TableCell className="px-4 py-4 align-middle text-right tabular-nums">
                           {user.monthDaysWithExpenses}
                         </TableCell>
-                        <TableCell className="px-4 py-4 text-right sm:px-6">
+                        <TableCell className="px-4 py-4 align-middle text-right sm:px-6">
                           <Button asChild size="sm" variant="outline">
-                            <Link href={`/admin/${user.userId}?period=${encodeURIComponent(dashboard.selectedPeriod)}`}>
+                            <Link
+                              href={`/admin/${user.userId}?period=${encodeURIComponent(dashboard.selectedPeriod)}`}
+                            >
                               Open
                               <ChevronRight className="size-4" />
                             </Link>
