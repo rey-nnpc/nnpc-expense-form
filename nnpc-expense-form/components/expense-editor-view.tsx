@@ -72,6 +72,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { TopRouteTabs } from "@/components/top-route-tabs";
+import { type UserAccount } from "@/lib/user-account-data";
 import {
   readCompaniesCache,
   readExpenseDayCache,
@@ -286,8 +287,9 @@ export default function ExpenseEditorView({
 }) {
   return (
     <AuthGate>
-      {({ session, logout }) => (
+      {({ account, session, logout }) => (
         <ProtectedExpenseEditor
+          account={account}
           expenseDate={expenseDate}
           logout={logout}
           session={session}
@@ -1401,10 +1403,12 @@ function MobileExportPreviewPageCard({
 }
 
 function ProtectedExpenseEditor({
+  account,
   expenseDate,
   logout,
   session,
 }: {
+  account: UserAccount;
   expenseDate: string;
   logout: () => Promise<void>;
   session: AuthSession;
@@ -2365,7 +2369,7 @@ function ProtectedExpenseEditor({
             </CardHeader>
           </Card>
 
-          <TopRouteTabs activeSection="expenses" />
+          <TopRouteTabs accountRole={account.role} activeSection="expenses" />
 
           <main className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(18rem,22rem)]">
             <Card className="premium-panel rounded-[2rem] border-border/60 py-0">

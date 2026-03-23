@@ -167,6 +167,74 @@ export async function supabaseRpcRequest<T>({
   });
 }
 
+export async function supabaseStorageJsonRequest<T>({
+  accessToken,
+  body,
+  headers,
+  method = "POST",
+  path,
+}: {
+  accessToken: string;
+  body?: unknown;
+  headers?: Record<string, string>;
+  method?: "GET" | "POST" | "PUT" | "DELETE";
+  path: string;
+}) {
+  assertSupabaseConfig();
+
+  const response = await fetch(`${SUPABASE_URL}/storage/v1/${path}`, {
+    method,
+    headers: {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  const payload = (await response.json().catch(() => null)) as T | null;
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(SESSION_EXPIRED_MESSAGE);
+    }
+
+    throw new Error(readSupabaseError(payload));
+  }
+
+  if (payload === null) {
+    throw new Error("Supabase returned an empty response.");
+  }
+
+  return payload;
+}
+
+export async function removeStorageObjects({
+  accessToken,
+  bucketName,
+  objectPaths,
+}: {
+  accessToken: string;
+  bucketName: string;
+  objectPaths: string[];
+}) {
+  if (objectPaths.length === 0) {
+    return [] as Array<{
+      name?: string;
+    }>;
+  }
+
+  return supabaseStorageJsonRequest<Array<{ name?: string }>>({
+    accessToken,
+    body: {
+      prefixes: objectPaths,
+    },
+    method: "DELETE",
+    path: `object/${encodeURIComponent(bucketName)}`,
+  });
+}
+
 export async function uploadStorageObject({
   accessToken,
   bucketName,

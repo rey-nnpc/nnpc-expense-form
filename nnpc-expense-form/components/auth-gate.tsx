@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   ArrowRight,
   LockKeyhole,
+  LogOut,
   Mail,
   ShieldCheck,
   Sparkles,
@@ -21,6 +23,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { SESSION_EXPIRED_MESSAGE } from "@/lib/supabase-api";
+import {
+  getCurrentUserAccount,
+  type AccountRole,
+  type UserAccount,
+} from "@/lib/user-account-data";
 import { cn } from "@/lib/utils";
 
 type AuthMode = "login" | "signup";
@@ -45,15 +54,15 @@ type AuthPayload = {
 };
 
 type AuthMessage = {
-  tone: "error" | "info";
   text: string;
+  tone: "error" | "info";
 };
 
 export type AuthSession = {
   accessToken: string;
+  expiresAt: number | null;
   refreshToken: string;
   userEmail: string;
-  expiresAt: number | null;
 };
 
 const AUTH_STORAGE_KEY = "nnpc-expense-auth-session";
@@ -63,6 +72,7 @@ const SUPABASE_PUBLISHABLE_KEY =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
   "";
 const SESSION_EXPIRED_COPY = "Your session expired. Log in again.";
+const ACCOUNT_REFRESH_INTERVAL_MS = 60_000;
 
 function readErrorMessage(payload: AuthPayload) {
   return (
@@ -168,6 +178,13 @@ function isSessionExpired(session: AuthSession) {
   return Date.now() >= session.expiresAt * 1000 - 15_000;
 }
 
+function isSessionExpiredError(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.message === SESSION_EXPIRED_COPY || error.message === SESSION_EXPIRED_MESSAGE)
+  );
+}
+
 async function requestSessionRefresh(currentSession: AuthSession) {
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY || !currentSession.refreshToken) {
     throw new Error(SESSION_EXPIRED_COPY);
@@ -204,11 +221,15 @@ async function requestSessionRefresh(currentSession: AuthSession) {
 }
 
 export default function AuthGate({
+  allowedRoles,
   children,
 }: {
+  allowedRoles?: AccountRole[];
   children: (auth: {
-    session: AuthSession;
+    account: UserAccount;
     logout: () => Promise<void>;
+    refreshAccount: () => Promise<void>;
+    session: AuthSession;
   }) => ReactNode;
 }) {
   const [isReady, setIsReady] = useState(false);
@@ -218,6 +239,10 @@ export default function AuthGate({
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [authMessage, setAuthMessage] = useState<AuthMessage | null>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [account, setAccount] = useState<UserAccount | null>(null);
+  const [accountMessage, setAccountMessage] = useState<AuthMessage | null>(null);
+  const [isResolvingAccount, setIsResolvingAccount] = useState(false);
+  const [accountRefreshNonce, setAccountRefreshNonce] = useState(0);
 
   const persistSession = (nextSession: AuthSession) => {
     setSession(nextSession);
@@ -226,10 +251,16 @@ export default function AuthGate({
 
   const clearSession = (message: AuthMessage | null = null) => {
     setSession(null);
+    setAccount(null);
+    setAccountMessage(null);
     setPassword("");
     setAuthMode("login");
     setAuthMessage(message);
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  };
+
+  const refreshAccount = async () => {
+    setAccountRefreshNonce((currentNonce) => currentNonce + 1);
   };
 
   useEffect(() => {
@@ -349,6 +380,73 @@ export default function AuthGate({
     };
   }, [session]);
 
+  useEffect(() => {
+    if (!session) {
+      setAccount(null);
+      setAccountMessage(null);
+      setIsResolvingAccount(false);
+      return;
+    }
+
+    let isActive = true;
+    setIsResolvingAccount(true);
+
+    void getCurrentUserAccount(session.accessToken)
+      .then((nextAccount) => {
+        if (!isActive) {
+          return;
+        }
+
+        setAccount(nextAccount);
+        setAccountMessage(null);
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (isSessionExpiredError(error)) {
+          clearSession({
+            tone: "info",
+            text: SESSION_EXPIRED_COPY,
+          });
+          return;
+        }
+
+        setAccount(null);
+        setAccountMessage({
+          tone: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : "Your account status could not be loaded.",
+        });
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsResolvingAccount(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [accountRefreshNonce, session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setAccountRefreshNonce((currentNonce) => currentNonce + 1);
+    }, ACCOUNT_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [session]);
+
   const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -406,7 +504,16 @@ export default function AuthGate({
 
       if (nextSession) {
         persistSession(nextSession);
-        setAuthMessage(null);
+        setAccount(null);
+        setAccountMessage(null);
+        setAuthMessage(
+          authMode === "signup"
+            ? {
+                tone: "info",
+                text: "Account created. Access stays pending until an admin approves you.",
+              }
+            : null,
+        );
       } else if (authMode === "signup") {
         setAuthMode("login");
         setAuthMessage({
@@ -443,14 +550,14 @@ export default function AuthGate({
           },
         });
       } catch {
-        // Local session cleanup is enough for the prototype.
+        // Local session cleanup is enough when logout cannot reach Supabase.
       }
     }
 
     clearSession();
   };
 
-  if (!isReady) {
+  if (!isReady || (session !== null && isResolvingAccount && account === null)) {
     return (
       <div className="page-shell min-h-screen">
         <div className="mx-auto flex min-h-screen w-full max-w-5xl items-center justify-center px-4 py-8 sm:px-6">
@@ -462,8 +569,13 @@ export default function AuthGate({
               <p className="mt-5 font-serif text-3xl tracking-tight text-foreground">
                 Loading secure workspace
               </p>
-              <p className="mt-3 text-sm leading-7 text-muted-foreground">
-                Preparing the expense console and restoring any stored session.
+              <div className="mx-auto mt-6 max-w-sm space-y-3">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-5/6" />
+                <Skeleton className="h-4 w-2/3" />
+              </div>
+              <p className="mt-5 text-sm leading-7 text-muted-foreground">
+                Preparing the expense console and restoring your access state.
               </p>
             </CardContent>
           </Card>
@@ -506,35 +618,34 @@ export default function AuthGate({
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <FeatureCard
-                  title="Concise dashboard"
                   description="Track dates and totals without clutter, then open detail only when needed."
                   icon={<Wallet className="size-4" />}
+                  title="Concise dashboard"
                 />
                 <FeatureCard
-                  title="Secure entry"
                   description="Email and password auth is handled directly against your Supabase project."
                   icon={<ShieldCheck className="size-4" />}
+                  title="Secure entry"
                 />
                 <FeatureCard
-                  title="Receipt workflow"
                   description="Attach image receipts per row and sync them to Supabase Storage and Postgres."
                   icon={<Sparkles className="size-4" />}
+                  title="Receipt workflow"
                 />
                 <FeatureCard
-                  title="Theme control"
                   description="Dark mode is the default canvas, with a light mode toggle in Settings."
                   icon={<LockKeyhole className="size-4" />}
+                  title="Theme control"
                 />
               </div>
 
               <div className="rounded-3xl border border-white/10 bg-background/65 px-5 py-5">
                 <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                  Prototype behavior
+                  Access workflow
                 </p>
                 <p className="mt-3 text-sm leading-7 text-foreground">
-                  Expense days, company headers, and uploaded files are stored in your
-                  Supabase project. Authentication still depends on your Supabase URL
-                  and publishable key from `.env.local`.
+                  New signups are created immediately in Supabase Auth, but app access
+                  stays pending until an admin approves the account in user management.
                 </p>
               </div>
             </div>
@@ -580,8 +691,8 @@ export default function AuthGate({
                   {authMode === "login" ? "Access the dashboard" : "Create your workspace"}
                 </CardTitle>
                 <CardDescription className="text-sm leading-7">
-                  Supabase email/password authentication only. The interface stays
-                  mobile-friendly and dark-first after sign-in.
+                  Supabase email/password authentication only. New accounts enter a
+                  pending approval queue before they can use the app.
                 </CardDescription>
               </div>
             </CardHeader>
@@ -593,10 +704,10 @@ export default function AuthGate({
                   <div className="relative">
                     <Mail className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
-                      className="h-12 rounded-2xl border-white/10 bg-background/75 pl-11"
-                      type="email"
                       autoComplete="email"
+                      className="h-12 rounded-2xl border-white/10 bg-background/75 pl-11"
                       placeholder="name@company.com"
+                      type="email"
                       value={email}
                       onChange={(event) => setEmail(event.target.value)}
                     />
@@ -608,12 +719,12 @@ export default function AuthGate({
                   <div className="relative">
                     <LockKeyhole className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
-                      className="h-12 rounded-2xl border-white/10 bg-background/75 pl-11"
-                      type="password"
                       autoComplete={
                         authMode === "login" ? "current-password" : "new-password"
                       }
+                      className="h-12 rounded-2xl border-white/10 bg-background/75 pl-11"
                       placeholder="At least 8 characters"
+                      type="password"
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                     />
@@ -657,17 +768,143 @@ export default function AuthGate({
     );
   }
 
-  return <>{children({ session, logout })}</>;
+  if (!account) {
+    return (
+      <AccessStateShell>
+        <AccessStateCard
+          description={
+            accountMessage?.text ??
+            "Your account status could not be resolved. Try again once the account record is available."
+          }
+          title="Account unavailable"
+        >
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => void refreshAccount()}>
+              Try again
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void logout()}>
+              <LogOut className="size-4" />
+              Log out
+            </Button>
+          </div>
+        </AccessStateCard>
+      </AccessStateShell>
+    );
+  }
+
+  if (account.accessStatus === "pending") {
+    return (
+      <AccessStateShell userEmail={session.userEmail}>
+        <AccessStateCard
+          description="Your account is signed in, but access stays blocked until an admin approves it."
+          title="Awaiting approval"
+        >
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => void refreshAccount()}>
+              Refresh status
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void logout()}>
+              <LogOut className="size-4" />
+              Log out
+            </Button>
+          </div>
+        </AccessStateCard>
+      </AccessStateShell>
+    );
+  }
+
+  if (account.accessStatus === "disabled") {
+    return (
+      <AccessStateShell userEmail={session.userEmail}>
+        <AccessStateCard
+          description="This account has been disabled and cannot use the main system right now."
+          title="Access disabled"
+        >
+          <Button type="button" variant="outline" onClick={() => void logout()}>
+            <LogOut className="size-4" />
+            Log out
+          </Button>
+        </AccessStateCard>
+      </AccessStateShell>
+    );
+  }
+
+  if (allowedRoles && !allowedRoles.includes(account.role)) {
+    return (
+      <AccessStateShell userEmail={session.userEmail}>
+        <AccessStateCard
+          description="Your account is approved, but this section is only available to admin roles."
+          title="Access denied"
+        >
+          <div className="flex flex-wrap gap-2">
+            <Button asChild type="button" variant="outline">
+              <Link href="/dashboard">Back to dashboard</Link>
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void logout()}>
+              <LogOut className="size-4" />
+              Log out
+            </Button>
+          </div>
+        </AccessStateCard>
+      </AccessStateShell>
+    );
+  }
+
+  return <>{children({ account, logout, refreshAccount, session })}</>;
+}
+
+function AccessStateShell({
+  children,
+  userEmail,
+}: {
+  children: ReactNode;
+  userEmail?: string;
+}) {
+  return (
+    <div className="page-shell min-h-screen">
+      <div className="mx-auto flex w-full max-w-7xl justify-end px-4 pt-5 sm:px-6 lg:px-8 lg:pt-8">
+        <ThemeSettingsSheet userEmail={userEmail} />
+      </div>
+      <div className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-5xl items-center justify-center px-4 pb-10 pt-4 sm:px-6">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function AccessStateCard({
+  children,
+  description,
+  title,
+}: {
+  children: ReactNode;
+  description: string;
+  title: string;
+}) {
+  return (
+    <Card className="premium-panel w-full max-w-xl rounded-[2rem] border-border/60 py-0">
+      <CardContent className="space-y-6 px-6 py-10 sm:px-10">
+        <Badge className="rounded-full px-3 py-1" variant="secondary">
+          Account state
+        </Badge>
+        <div>
+          <h1 className="font-serif text-3xl tracking-tight text-foreground">{title}</h1>
+          <p className="mt-3 text-sm leading-7 text-muted-foreground">{description}</p>
+        </div>
+        {children}
+      </CardContent>
+    </Card>
+  );
 }
 
 function FeatureCard({
-  title,
   description,
   icon,
+  title,
 }: {
-  title: string;
   description: string;
   icon: ReactNode;
+  title: string;
 }) {
   return (
     <div className="rounded-3xl border border-white/10 bg-background/65 p-5">

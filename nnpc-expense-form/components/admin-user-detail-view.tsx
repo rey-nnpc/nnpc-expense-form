@@ -1,0 +1,360 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState, type FormEvent } from "react";
+import { ArrowLeft, LogOut } from "lucide-react";
+import AuthGate, { type AuthSession } from "@/components/auth-gate";
+import { ThemeSettingsSheet } from "@/components/theme-settings-sheet";
+import { TopRouteTabs } from "@/components/top-route-tabs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  getAdminExpenseUserDetail,
+  normalizeAdminPeriod,
+  type AdminExpenseUserDetail,
+  type AdminExpenseUserDetailResponse,
+} from "@/lib/admin-data";
+import { formatDisplayDate } from "@/lib/date";
+import { formatCurrency } from "@/lib/expense-data";
+import { SESSION_EXPIRED_MESSAGE } from "@/lib/supabase-api";
+import { type UserAccount } from "@/lib/user-account-data";
+
+type AdminMessage = {
+  tone: "error" | "info";
+  text: string;
+};
+
+export default function AdminUserDetailView({
+  initialPeriod,
+  userId,
+}: {
+  initialPeriod: string;
+  userId: string;
+}) {
+  return (
+    <AuthGate allowedRoles={["admin", "central_admin"]}>
+      {({ account, session, logout }) => (
+        <ProtectedAdminUserDetail
+          account={account}
+          initialPeriod={initialPeriod}
+          logout={logout}
+          session={session}
+          userId={userId}
+        />
+      )}
+    </AuthGate>
+  );
+}
+
+function ProtectedAdminUserDetail({
+  account,
+  initialPeriod,
+  logout,
+  session,
+  userId,
+}: {
+  account: UserAccount;
+  initialPeriod: string;
+  logout: () => Promise<void>;
+  session: AuthSession;
+  userId: string;
+}) {
+  const normalizedInitialPeriod = normalizeAdminPeriod(initialPeriod);
+  const [draftPeriod, setDraftPeriod] = useState(normalizedInitialPeriod);
+  const [activePeriod, setActivePeriod] = useState(normalizedInitialPeriod);
+  const [detail, setDetail] = useState<AdminExpenseUserDetailResponse | null>(null);
+  const [message, setMessage] = useState<AdminMessage | null>(null);
+  const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
+  const [requestNonce, setRequestNonce] = useState(0);
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadDashboard = async () => {
+      const nextDetail = await getAdminExpenseUserDetail(
+        session.accessToken,
+        activePeriod,
+        userId,
+      );
+
+      if (!isActive) {
+        return;
+      }
+
+      setDetail(nextDetail);
+      setDraftPeriod(nextDetail.selectedPeriod);
+      setMessage(null);
+    };
+
+    void loadDashboard()
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+          void logout();
+          return;
+        }
+
+        setMessage({
+          tone: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : "The admin expense detail could not be loaded.",
+        });
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoadingDashboard(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [activePeriod, logout, requestNonce, session.accessToken, userId]);
+
+  const selectedUser = detail?.user ?? null;
+
+  const handlePeriodSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    setMessage(null);
+    setIsLoadingDashboard(true);
+    setActivePeriod(normalizeAdminPeriod(draftPeriod));
+    setRequestNonce((currentNonce) => currentNonce + 1);
+  };
+
+  return (
+    <div className="relative min-h-screen bg-background text-foreground">
+      <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
+        <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              {account.role === "central_admin" ? "Central Admin" : "Admin"}
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-[2.6rem]">
+              Expense detail
+            </h1>
+            <p className="mt-1 truncate text-sm text-muted-foreground">{session.userEmail}</p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 sm:justify-end">
+            <ThemeSettingsSheet userEmail={session.userEmail} />
+            <Button type="button" variant="outline" onClick={() => void logout()}>
+              <LogOut className="size-4" />
+              Log out
+            </Button>
+          </div>
+        </header>
+
+        <TopRouteTabs accountRole={account.role} activeSection="expense-insight" />
+
+        <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <Button asChild variant="outline">
+            <Link href={`/admin/expenses?period=${encodeURIComponent(activePeriod)}`}>
+              <ArrowLeft className="size-4" />
+              Back To List
+            </Link>
+          </Button>
+
+          <form
+            className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-end"
+            onSubmit={handlePeriodSubmit}
+          >
+            <label className="flex w-full flex-col gap-1.5 text-sm sm:w-[13rem]">
+              <span className="text-muted-foreground">Month</span>
+              <Input
+                className="h-10 bg-background"
+                type="month"
+                value={draftPeriod}
+                onChange={(event) => setDraftPeriod(event.target.value)}
+              />
+            </label>
+            <Button className="sm:min-w-[7rem]" type="submit">
+              Update
+            </Button>
+          </form>
+        </div>
+
+        {message ? (
+          <Alert
+            className="mt-5 border-border bg-card"
+            variant={message.tone === "error" ? "destructive" : "default"}
+          >
+            <AlertTitle>
+              {message.tone === "error" ? "Admin Detail Unavailable" : "Admin Detail"}
+            </AlertTitle>
+            <AlertDescription>{message.text}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <Card className="mt-6 border-border bg-card py-0 shadow-none">
+          <CardHeader className="gap-5 border-b border-border px-6 py-6 sm:px-7">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <CardTitle className="text-2xl font-semibold tracking-tight">
+                  {selectedUser ? selectedUser.displayName : "User Detail"}
+                </CardTitle>
+                <CardDescription className="mt-2 text-[15px] leading-7">
+                  {selectedUser
+                    ? `${selectedUser.email} · ${selectedUser.monthDaysWithExpenses} expense day(s) in ${detail?.periodLabel ?? activePeriod}`
+                    : "The selected user could not be found for this admin view."}
+                </CardDescription>
+              </div>
+
+              {selectedUser ? (
+                <div className="flex flex-wrap gap-2 sm:justify-end">
+                  <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
+                    {detail?.periodLabel ?? activePeriod}:{" "}
+                    {formatCurrency(selectedUser.monthlyExpense)}
+                  </Badge>
+                  <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
+                    {detail?.selectedYear ?? Number(activePeriod.slice(0, 4))}:{" "}
+                    {formatCurrency(selectedUser.yearlyExpense)}
+                  </Badge>
+                </div>
+              ) : null}
+            </div>
+          </CardHeader>
+
+          <CardContent className="px-0 py-0">
+            {isLoadingDashboard ? (
+              <AdminExpenseDetailSkeleton />
+            ) : !detail ? (
+              <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
+                No admin detail data available.
+              </div>
+            ) : !selectedUser ? (
+              <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
+                No matching user was found.
+              </div>
+            ) : (
+              <UserDetailContent
+                periodLabel={detail.periodLabel}
+                selectedUser={selectedUser}
+                selectedYear={detail.selectedYear}
+              />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function AdminExpenseDetailSkeleton() {
+  return (
+    <div className="space-y-5 px-5 py-6 sm:px-6">
+      <div className="flex flex-wrap gap-3">
+        <Skeleton className="h-8 w-36 rounded-full" />
+        <Skeleton className="h-8 w-36 rounded-full" />
+      </div>
+      <div className="space-y-3">
+        <Skeleton className="h-12 w-full" />
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div
+            className="grid grid-cols-[1.1fr_1.2fr_1fr_1fr] gap-3"
+            key={`detail-skeleton-${index + 1}`}
+          >
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UserDetailContent({
+  periodLabel,
+  selectedUser,
+  selectedYear,
+}: {
+  periodLabel: string;
+  selectedUser: AdminExpenseUserDetail;
+  selectedYear: number;
+}) {
+  return (
+    <div className="space-y-0">
+      <div className="grid gap-4 border-b border-border px-6 py-7 sm:grid-cols-3 sm:px-7">
+        <div className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5">
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Month Total
+          </div>
+          <div className="mt-3 text-4xl font-semibold tracking-tight">
+            {formatCurrency(selectedUser.monthlyExpense)}
+          </div>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{periodLabel}</p>
+        </div>
+
+        <div className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5">
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Year Total
+          </div>
+          <div className="mt-3 text-4xl font-semibold tracking-tight">
+            {formatCurrency(selectedUser.yearlyExpense)}
+          </div>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{selectedYear}</p>
+        </div>
+
+        <div className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5">
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Expense Days
+          </div>
+          <div className="mt-3 text-4xl font-semibold tracking-tight">{selectedUser.monthDaysWithExpenses}</div>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">Submitted days in this month</p>
+        </div>
+      </div>
+
+      {selectedUser.detailRows.length === 0 ? (
+        <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
+          No submitted expense days for {periodLabel}.
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/40">
+              <TableHead className="w-[14rem] px-4 py-3 sm:px-6">Date</TableHead>
+              <TableHead className="w-[12rem] px-4 py-3">Expense Code</TableHead>
+              <TableHead className="w-[14rem] px-4 py-3">Employee</TableHead>
+              <TableHead className="w-[16rem] px-4 py-3">Company</TableHead>
+              <TableHead className="w-[10rem] px-4 py-3 text-right sm:px-6">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {selectedUser.detailRows.map((detail) => (
+              <TableRow key={detail.reportId}>
+                <TableCell className="px-4 py-4 align-middle sm:px-6">
+                  {formatDisplayDate(detail.date)}
+                </TableCell>
+                <TableCell className="px-4 py-4 align-middle">{detail.expenseCode}</TableCell>
+                <TableCell className="px-4 py-4 align-middle">{detail.employeeName}</TableCell>
+                <TableCell className="px-4 py-4 align-middle">{detail.companyName}</TableCell>
+                <TableCell className="px-4 py-4 align-middle text-right font-medium tabular-nums sm:px-6">
+                  {formatCurrency(detail.totalAmount)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </div>
+  );
+}
