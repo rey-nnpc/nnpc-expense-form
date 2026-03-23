@@ -159,25 +159,8 @@ body {
   min-height: 100vh;
   font-family: var(--font-sarabun), sans-serif;
   background-color: var(--background);
-  background-image:
-    radial-gradient(circle at 14% 18%, var(--ambient-glow-1), transparent 28%),
-    radial-gradient(circle at 82% 10%, var(--ambient-glow-2), transparent 22%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 38%);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.01), transparent 22%);
   color: var(--foreground);
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  opacity: 0.65;
-  background-image:
-    linear-gradient(var(--ambient-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--ambient-grid) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(circle at center, black 42%, transparent 100%);
 }
 
 button,
@@ -199,9 +182,7 @@ button {
 .page-shell {
   position: relative;
   isolation: isolate;
-  background:
-    radial-gradient(circle at top left, rgba(34, 197, 94, 0.08), transparent 26%),
-    radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.06), transparent 28%);
+  background: none;
 }
 
 .page-shell > * {

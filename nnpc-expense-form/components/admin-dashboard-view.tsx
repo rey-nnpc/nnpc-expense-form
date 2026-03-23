@@ -123,13 +123,14 @@ function ProtectedAdminDashboard({
 
   return (
     <div className="relative min-h-screen bg-background text-foreground">
-      <div className="fixed inset-0 bg-background" />
-
-      <div className="relative z-10 mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
-        <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+      <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
+        <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <h1 className="font-serif text-3xl tracking-tight sm:text-4xl">
-              Admin Expenses
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Central Admin
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-[2.6rem]">
+              Expenses insight
             </h1>
             <p className="mt-1 truncate text-sm text-muted-foreground">{session.userEmail}</p>
           </div>
@@ -143,16 +144,16 @@ function ProtectedAdminDashboard({
           </div>
         </header>
 
-        <TopRouteTabs activeSection="admin" />
+        <TopRouteTabs activeSection="expense-insight" />
 
-        <Card className="mt-6 border-border bg-card py-0 shadow-none">
-          <CardHeader className="gap-4 border-b border-border px-5 py-6 sm:px-6">
+        <Card className="mt-8 border-border bg-card py-0 shadow-none">
+          <CardHeader className="gap-5 border-b border-border px-6 py-6 sm:px-7">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
-                <CardTitle className="font-serif text-2xl tracking-tight">
+                <CardTitle className="text-2xl font-semibold tracking-tight">
                   User List
                 </CardTitle>
-                <CardDescription className="mt-1 text-sm leading-6">
+                <CardDescription className="mt-2 text-[15px] leading-7">
                   Quick summary only. Open a user to view daily expense detail.
                 </CardDescription>
               </div>
@@ -178,35 +179,35 @@ function ProtectedAdminDashboard({
           </CardHeader>
 
           {dashboard ? (
-            <CardContent className="grid gap-4 px-5 py-6 sm:grid-cols-3 sm:px-6">
-              <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
-                <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
+            <CardContent className="grid gap-4 px-6 py-7 sm:grid-cols-3 sm:px-7">
+              <div className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Users
                 </div>
-                <div className="mt-2 font-serif text-3xl">{dashboard.users.length}</div>
-                <p className="mt-1 text-sm text-muted-foreground">
+                <div className="mt-3 text-4xl font-semibold tracking-tight">{dashboard.users.length}</div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
                   {dashboard.totals.usersWithMonthlyExpenses} active in {dashboard.periodLabel}
                 </p>
               </div>
 
-              <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
-                <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
+              <div className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Month Total
                 </div>
-                <div className="mt-2 font-serif text-3xl">
+                <div className="mt-3 text-4xl font-semibold tracking-tight">
                   {formatCurrency(dashboard.totals.monthlyExpense)}
                 </div>
-                <p className="mt-1 text-sm text-muted-foreground">{dashboard.periodLabel}</p>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">{dashboard.periodLabel}</p>
               </div>
 
-              <div className="flex min-h-[8.75rem] flex-col justify-between rounded-lg border border-border bg-card px-4 py-4">
-                <div className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">
+              <div className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Year Total
                 </div>
-                <div className="mt-2 font-serif text-3xl">
+                <div className="mt-3 text-4xl font-semibold tracking-tight">
                   {formatCurrency(dashboard.totals.yearlyExpense)}
                 </div>
-                <p className="mt-1 text-sm text-muted-foreground">{dashboard.selectedYear}</p>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">{dashboard.selectedYear}</p>
               </div>
             </CardContent>
           ) : null}
@@ -224,7 +225,7 @@ function ProtectedAdminDashboard({
           </Alert>
         ) : null}
 
-        <Card className="mt-5 border-border bg-card py-0 shadow-none">
+        <Card className="mt-6 border-border bg-card py-0 shadow-none">
           <CardContent className="px-0 py-0">
             {isLoadingDashboard ? (
               <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
@@ -290,7 +291,7 @@ function ProtectedAdminDashboard({
                         <TableCell className="px-4 py-4 align-middle text-right sm:px-6">
                           <Button asChild size="sm" variant="outline">
                             <Link
-                              href={`/admin/${user.userId}?period=${encodeURIComponent(dashboard.selectedPeriod)}`}
+                              href={`/admin/expenses/${user.userId}?period=${encodeURIComponent(dashboard.selectedPeriod)}`}
                             >
                               Open
                               <ChevronRight className="size-4" />

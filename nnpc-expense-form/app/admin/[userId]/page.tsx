@@ -1,5 +1,4 @@
-import AdminUserDetailView from "@/components/admin-user-detail-view";
-import { normalizeAdminPeriod } from "@/lib/admin-data";
+import { redirect } from "next/navigation";
 
 type AdminUserDetailPageProps = {
   params: Promise<{
@@ -20,7 +19,8 @@ export default async function AdminUserDetailPage({
 }: AdminUserDetailPageProps) {
   const routeParams = await params;
   const queryParams = (await searchParams) ?? {};
-  const initialPeriod = normalizeAdminPeriod(readSingleSearchParam(queryParams.period));
+  const period = readSingleSearchParam(queryParams.period);
+  const periodSuffix = period ? `?period=${encodeURIComponent(period)}` : "";
 
-  return <AdminUserDetailView initialPeriod={initialPeriod} userId={routeParams.userId} />;
+  redirect(`/admin/expenses/${routeParams.userId}${periodSuffix}`);
 }
