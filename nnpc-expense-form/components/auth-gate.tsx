@@ -23,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/supabase-api";
 import {
   getCurrentUserAccount,
@@ -568,7 +569,12 @@ export default function AuthGate({
               <p className="mt-5 font-serif text-3xl tracking-tight text-foreground">
                 Loading secure workspace
               </p>
-              <p className="mt-3 text-sm leading-7 text-muted-foreground">
+              <div className="mx-auto mt-6 max-w-sm space-y-3">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-5/6" />
+                <Skeleton className="h-4 w-2/3" />
+              </div>
+              <p className="mt-5 text-sm leading-7 text-muted-foreground">
                 Preparing the expense console and restoring your access state.
               </p>
             </CardContent>

@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/supabase-api";
@@ -336,33 +337,44 @@ function ProtectedAdminControlCenter({
           </div>
         </header>
 
-        <TopRouteTabs activeSection="user-management" />
+        <TopRouteTabs accountRole={account.role} activeSection="user-management" />
 
         <section className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <SummaryCard
-            description="Waiting for access approval"
-            icon={<Users className="size-4" />}
-            label="Pending queue"
-            value={data?.totals.pendingUsers ?? 0}
-          />
-          <SummaryCard
-            description="Approved accounts that can use the app"
-            icon={<UserCheck className="size-4" />}
-            label="Approved users"
-            value={data?.totals.approvedUsers ?? 0}
-          />
-          <SummaryCard
-            description="Accounts currently blocked"
-            icon={<UserRoundCog className="size-4" />}
-            label="Disabled users"
-            value={data?.totals.disabledUsers ?? 0}
-          />
-          <SummaryCard
-            description="Approved admin or central-admin accounts"
-            icon={<ShieldCheck className="size-4" />}
-            label="Elevated roles"
-            value={data?.totals.elevatedUsers ?? 0}
-          />
+          {isLoading && !data ? (
+            <>
+              <SummaryCardSkeleton />
+              <SummaryCardSkeleton />
+              <SummaryCardSkeleton />
+              <SummaryCardSkeleton />
+            </>
+          ) : (
+            <>
+              <SummaryCard
+                description="Waiting for access approval"
+                icon={<Users className="size-4" />}
+                label="Pending queue"
+                value={data?.totals.pendingUsers ?? 0}
+              />
+              <SummaryCard
+                description="Approved accounts that can use the app"
+                icon={<UserCheck className="size-4" />}
+                label="Approved users"
+                value={data?.totals.approvedUsers ?? 0}
+              />
+              <SummaryCard
+                description="Accounts currently blocked"
+                icon={<UserRoundCog className="size-4" />}
+                label="Disabled users"
+                value={data?.totals.disabledUsers ?? 0}
+              />
+              <SummaryCard
+                description="Approved admin or central-admin accounts"
+                icon={<ShieldCheck className="size-4" />}
+                label="Elevated roles"
+                value={data?.totals.elevatedUsers ?? 0}
+              />
+            </>
+          )}
         </section>
 
         <Card className="mt-6 border-border bg-card py-0 shadow-none">
@@ -534,7 +546,7 @@ function ManagementTableCard({
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              <EmptyTableRow colSpan={7} message="Loading managed users..." />
+              <LoadingTableRows colCount={7} />
             ) : managedUsers.length === 0 ? (
               <EmptyTableRow colSpan={7} message="No approved or disabled accounts are available." />
             ) : (
@@ -712,7 +724,7 @@ function AllowlistTableCard({
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              <EmptyTableRow colSpan={5} message="Loading pending signups..." />
+              <LoadingTableRows colCount={5} />
             ) : allowlistUsers.length === 0 ? (
               <EmptyTableRow colSpan={5} message="No pending signups are waiting for review." />
             ) : (
@@ -834,6 +846,23 @@ function SummaryCard({
   );
 }
 
+function SummaryCardSkeleton() {
+  return (
+    <Card className="border-border bg-card py-0 shadow-none">
+      <CardContent className="flex min-h-[8.25rem] flex-col justify-between px-5 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="size-8 rounded-full" />
+        </div>
+        <div className="space-y-3">
+          <Skeleton className="h-9 w-20" />
+          <Skeleton className="h-4 w-full max-w-[12rem]" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ManagementSectionCard({
   children,
   count,
@@ -877,6 +906,24 @@ function EmptyTableRow({
       </TableCell>
     </TableRow>
   );
+}
+
+function LoadingTableRows({
+  colCount,
+  rowCount = 4,
+}: {
+  colCount: number;
+  rowCount?: number;
+}) {
+  return Array.from({ length: rowCount }).map((_, rowIndex) => (
+    <TableRow key={`loading-row-${rowIndex + 1}`}>
+      {Array.from({ length: colCount }).map((__, columnIndex) => (
+        <TableCell className="px-4 py-4" key={`loading-cell-${rowIndex + 1}-${columnIndex + 1}`}>
+          <Skeleton className="h-9 w-full" />
+        </TableCell>
+      ))}
+    </TableRow>
+  ));
 }
 
 function RowActions({

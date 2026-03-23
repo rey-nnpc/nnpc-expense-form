@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -20,10 +21,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  getAdminExpenseDashboard,
+  getAdminExpenseUserDetail,
   normalizeAdminPeriod,
-  type AdminExpenseDashboard,
-  type AdminExpenseUserSummary,
+  type AdminExpenseUserDetail,
+  type AdminExpenseUserDetailResponse,
 } from "@/lib/admin-data";
 import { formatDisplayDate } from "@/lib/date";
 import { formatCurrency } from "@/lib/expense-data";
@@ -73,7 +74,7 @@ function ProtectedAdminUserDetail({
   const normalizedInitialPeriod = normalizeAdminPeriod(initialPeriod);
   const [draftPeriod, setDraftPeriod] = useState(normalizedInitialPeriod);
   const [activePeriod, setActivePeriod] = useState(normalizedInitialPeriod);
-  const [dashboard, setDashboard] = useState<AdminExpenseDashboard | null>(null);
+  const [detail, setDetail] = useState<AdminExpenseUserDetailResponse | null>(null);
   const [message, setMessage] = useState<AdminMessage | null>(null);
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
   const [requestNonce, setRequestNonce] = useState(0);
@@ -82,14 +83,18 @@ function ProtectedAdminUserDetail({
     let isActive = true;
 
     const loadDashboard = async () => {
-      const nextDashboard = await getAdminExpenseDashboard(session.accessToken, activePeriod);
+      const nextDetail = await getAdminExpenseUserDetail(
+        session.accessToken,
+        activePeriod,
+        userId,
+      );
 
       if (!isActive) {
         return;
       }
 
-      setDashboard(nextDashboard);
-      setDraftPeriod(nextDashboard.selectedPeriod);
+      setDetail(nextDetail);
+      setDraftPeriod(nextDetail.selectedPeriod);
       setMessage(null);
     };
 
@@ -121,10 +126,9 @@ function ProtectedAdminUserDetail({
     return () => {
       isActive = false;
     };
-  }, [activePeriod, logout, requestNonce, session.accessToken]);
+  }, [activePeriod, logout, requestNonce, session.accessToken, userId]);
 
-  const selectedUser =
-    dashboard?.users.find((dashboardUser) => dashboardUser.userId === userId) ?? null;
+  const selectedUser = detail?.user ?? null;
 
   const handlePeriodSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -158,7 +162,7 @@ function ProtectedAdminUserDetail({
           </div>
         </header>
 
-        <TopRouteTabs activeSection="expense-insight" />
+        <TopRouteTabs accountRole={account.role} activeSection="expense-insight" />
 
         <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <Button asChild variant="outline">
@@ -208,7 +212,7 @@ function ProtectedAdminUserDetail({
                 </CardTitle>
                 <CardDescription className="mt-2 text-[15px] leading-7">
                   {selectedUser
-                    ? `${selectedUser.email} · ${selectedUser.monthDaysWithExpenses} expense day(s) in ${dashboard?.periodLabel ?? activePeriod}`
+                    ? `${selectedUser.email} · ${selectedUser.monthDaysWithExpenses} expense day(s) in ${detail?.periodLabel ?? activePeriod}`
                     : "The selected user could not be found for this admin view."}
                 </CardDescription>
               </div>
@@ -216,11 +220,11 @@ function ProtectedAdminUserDetail({
               {selectedUser ? (
                 <div className="flex flex-wrap gap-2 sm:justify-end">
                   <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
-                    {dashboard?.periodLabel ?? activePeriod}:{" "}
+                    {detail?.periodLabel ?? activePeriod}:{" "}
                     {formatCurrency(selectedUser.monthlyExpense)}
                   </Badge>
                   <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
-                    {dashboard?.selectedYear ?? Number(activePeriod.slice(0, 4))}:{" "}
+                    {detail?.selectedYear ?? Number(activePeriod.slice(0, 4))}:{" "}
                     {formatCurrency(selectedUser.yearlyExpense)}
                   </Badge>
                 </div>
@@ -230,10 +234,8 @@ function ProtectedAdminUserDetail({
 
           <CardContent className="px-0 py-0">
             {isLoadingDashboard ? (
-              <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
-                Loading user expense detail...
-              </div>
-            ) : !dashboard ? (
+              <AdminExpenseDetailSkeleton />
+            ) : !detail ? (
               <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
                 No admin detail data available.
               </div>
@@ -243,13 +245,38 @@ function ProtectedAdminUserDetail({
               </div>
             ) : (
               <UserDetailContent
-                periodLabel={dashboard.periodLabel}
+                periodLabel={detail.periodLabel}
                 selectedUser={selectedUser}
-                selectedYear={dashboard.selectedYear}
+                selectedYear={detail.selectedYear}
               />
             )}
           </CardContent>
         </Card>
+      </div>
+    </div>
+  );
+}
+
+function AdminExpenseDetailSkeleton() {
+  return (
+    <div className="space-y-5 px-5 py-6 sm:px-6">
+      <div className="flex flex-wrap gap-3">
+        <Skeleton className="h-8 w-36 rounded-full" />
+        <Skeleton className="h-8 w-36 rounded-full" />
+      </div>
+      <div className="space-y-3">
+        <Skeleton className="h-12 w-full" />
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div
+            className="grid grid-cols-[1.1fr_1.2fr_1fr_1fr] gap-3"
+            key={`detail-skeleton-${index + 1}`}
+          >
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -261,7 +288,7 @@ function UserDetailContent({
   selectedYear,
 }: {
   periodLabel: string;
-  selectedUser: AdminExpenseUserSummary;
+  selectedUser: AdminExpenseUserDetail;
   selectedYear: number;
 }) {
   return (

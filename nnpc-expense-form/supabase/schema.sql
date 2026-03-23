@@ -644,22 +644,9 @@ begin
         0
       )::numeric as monthly_expense,
       coalesce(sum(yearly_reports.total_amount), 0)::numeric as yearly_expense,
-      coalesce(
-        jsonb_agg(
-          jsonb_build_object(
-            'companyName', yearly_reports.company_name,
-            'date', to_char(yearly_reports.expense_date, 'YYYY-MM-DD'),
-            'employeeName', yearly_reports.employee_name,
-            'expenseCode', yearly_reports.expense_code,
-            'reportId', yearly_reports.report_id,
-            'totalAmount', yearly_reports.total_amount
-          )
-          order by yearly_reports.expense_date desc, yearly_reports.report_id
-        ) filter (
-          where to_char(yearly_reports.expense_date, 'YYYY-MM') = v_selected_period
-        ),
-        '[]'::jsonb
-      ) as detail_rows
+      count(*) filter (
+        where to_char(yearly_reports.expense_date, 'YYYY-MM') = v_selected_period
+      )::integer as month_days_with_expenses
     from public.user_accounts
     left join yearly_reports
       on yearly_reports.user_id = user_accounts.user_id
@@ -682,8 +669,7 @@ begin
           'email', per_user.email,
           'monthlyExpense', per_user.monthly_expense,
           'yearlyExpense', per_user.yearly_expense,
-          'monthDaysWithExpenses', jsonb_array_length(per_user.detail_rows),
-          'detailRows', per_user.detail_rows
+          'monthDaysWithExpenses', per_user.month_days_with_expenses
         )
         order by per_user.yearly_expense desc, per_user.display_name asc
       ),
@@ -705,6 +691,144 @@ begin
         'yearlyExpense', 0
       ),
       'users', '[]'::jsonb
+    )
+  );
+end;
+$$;
+
+create or replace function public.get_admin_expense_user_detail(
+  p_period text default null,
+  p_user_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actor public.user_accounts%rowtype;
+  v_target public.user_accounts%rowtype;
+  v_selected_period text := coalesce(
+    nullif(trim(p_period), ''),
+    to_char(timezone('Asia/Bangkok', now()), 'YYYY-MM')
+  );
+  v_selected_year integer;
+  v_selected_month integer;
+  v_result jsonb;
+begin
+  v_actor := public.require_admin_user_account(false);
+
+  if p_user_id is null then
+    raise exception 'Target user is required.';
+  end if;
+
+  select *
+  into v_target
+  from public.user_accounts
+  where user_id = p_user_id;
+
+  if not found then
+    raise exception 'Target user account not found.';
+  end if;
+
+  if v_selected_period !~ '^\d{4}-\d{2}$' then
+    v_selected_period := to_char(timezone('Asia/Bangkok', now()), 'YYYY-MM');
+  end if;
+
+  v_selected_year := substring(v_selected_period from 1 for 4)::integer;
+  v_selected_month := substring(v_selected_period from 6 for 2)::integer;
+
+  if v_selected_year < 2000 or v_selected_year > 2100 or v_selected_month < 1 or v_selected_month > 12 then
+    v_selected_period := to_char(timezone('Asia/Bangkok', now()), 'YYYY-MM');
+    v_selected_year := substring(v_selected_period from 1 for 4)::integer;
+    v_selected_month := substring(v_selected_period from 6 for 2)::integer;
+  end if;
+
+  with yearly_reports as (
+    select
+      expense_reports.id as report_id,
+      expense_reports.expense_date,
+      coalesce(nullif(trim(expense_reports.expense_code), ''), 'EXP') as expense_code,
+      coalesce(nullif(trim(expense_reports.company_name), ''), 'No company') as company_name,
+      coalesce(
+        nullif(trim(expense_reports.employee_name), ''),
+        v_target.display_name
+      ) as employee_name,
+      expense_reports.total_amount_thb::numeric as total_amount
+    from public.expense_reports
+    where expense_reports.user_id = p_user_id
+      and expense_reports.expense_date >= make_date(v_selected_year, 1, 1)
+      and expense_reports.expense_date <= make_date(v_selected_year, 12, 31)
+  ),
+  selected_user as (
+    select
+      v_target.user_id as user_id,
+      v_target.display_name as display_name,
+      coalesce(nullif(trim(v_target.email), ''), 'No email') as email,
+      count(*) filter (
+        where to_char(yearly_reports.expense_date, 'YYYY-MM') = v_selected_period
+      )::integer as month_days_with_expenses,
+      coalesce(
+        sum(
+          case
+            when to_char(yearly_reports.expense_date, 'YYYY-MM') = v_selected_period
+              then yearly_reports.total_amount
+            else 0
+          end
+        ),
+        0
+      )::numeric as monthly_expense,
+      coalesce(sum(yearly_reports.total_amount), 0)::numeric as yearly_expense,
+      coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'companyName', yearly_reports.company_name,
+            'date', to_char(yearly_reports.expense_date, 'YYYY-MM-DD'),
+            'employeeName', yearly_reports.employee_name,
+            'expenseCode', yearly_reports.expense_code,
+            'reportId', yearly_reports.report_id,
+            'totalAmount', yearly_reports.total_amount
+          )
+          order by yearly_reports.expense_date desc, yearly_reports.report_id
+        ) filter (
+          where to_char(yearly_reports.expense_date, 'YYYY-MM') = v_selected_period
+        ),
+        '[]'::jsonb
+      ) as detail_rows
+    from yearly_reports
+  )
+  select jsonb_build_object(
+    'selectedPeriod', v_selected_period,
+    'selectedYear', v_selected_year,
+    'selectedMonth', v_selected_month,
+    'user', jsonb_build_object(
+      'userId', selected_user.user_id,
+      'displayName', selected_user.display_name,
+      'email', selected_user.email,
+      'monthlyExpense', selected_user.monthly_expense,
+      'yearlyExpense', selected_user.yearly_expense,
+      'monthDaysWithExpenses', selected_user.month_days_with_expenses,
+      'detailRows', selected_user.detail_rows
+    )
+  )
+  into v_result
+  from selected_user;
+
+  return coalesce(
+    v_result,
+    jsonb_build_object(
+      'selectedPeriod', v_selected_period,
+      'selectedYear', v_selected_year,
+      'selectedMonth', v_selected_month,
+      'user', jsonb_build_object(
+        'userId', v_target.user_id,
+        'displayName', v_target.display_name,
+        'email', coalesce(nullif(trim(v_target.email), ''), 'No email'),
+        'monthlyExpense', 0,
+        'yearlyExpense', 0,
+        'monthDaysWithExpenses', 0,
+        'detailRows', '[]'::jsonb
+      )
     )
   );
 end;
@@ -1196,10 +1320,15 @@ comment on function public.admin_manage_user_account(uuid, text, text) is
 comment on function public.get_admin_expense_dashboard(text) is
   'Authenticated admin or central-admin dashboard aggregate for cross-user expense reporting.';
 
+comment on function public.get_admin_expense_user_detail(text, uuid) is
+  'Authenticated admin or central-admin detail payload for a single user expense view.';
+
 revoke all on function public.require_admin_user_account(boolean) from public;
 revoke all on function public.get_admin_user_management() from public;
 revoke all on function public.admin_manage_user_account(uuid, text, text) from public;
 revoke all on function public.get_admin_expense_dashboard(text) from public;
+revoke all on function public.get_admin_expense_user_detail(text, uuid) from public;
 grant execute on function public.get_admin_user_management() to authenticated;
 grant execute on function public.admin_manage_user_account(uuid, text, text) to authenticated;
 grant execute on function public.get_admin_expense_dashboard(text) to authenticated;
+grant execute on function public.get_admin_expense_user_detail(text, uuid) to authenticated;

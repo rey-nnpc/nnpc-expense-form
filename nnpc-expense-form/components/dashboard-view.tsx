@@ -19,21 +19,24 @@ import {
 } from "@/lib/date";
 import { formatCurrency, type ExpenseSummary } from "@/lib/expense-data";
 import { listExpenseSummaries } from "@/lib/report-data";
+import { type UserAccount } from "@/lib/user-account-data";
 
 export default function DashboardView() {
   return (
     <AuthGate>
-      {({ session, logout }) => (
-        <ProtectedDashboard logout={logout} session={session} />
+      {({ account, session, logout }) => (
+        <ProtectedDashboard account={account} logout={logout} session={session} />
       )}
     </AuthGate>
   );
 }
 
 function ProtectedDashboard({
+  account,
   logout,
   session,
 }: {
+  account: UserAccount;
   logout: () => Promise<void>;
   session: AuthSession;
 }) {
@@ -130,7 +133,7 @@ function ProtectedDashboard({
           </div>
         </header>
 
-        <TopRouteTabs activeSection="expenses" />
+        <TopRouteTabs accountRole={account.role} activeSection="expenses" />
 
         <Card className="mt-6 rounded-[1.75rem] border-border/60 py-0 shadow-none">
           <CardContent className="px-4 py-4 sm:px-5">

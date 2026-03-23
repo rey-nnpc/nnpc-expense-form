@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { type AccountRole } from "@/lib/user-account-data";
 import { cn } from "@/lib/utils";
 
 type RouteSection =
@@ -11,9 +12,12 @@ type RouteSection =
 
 export function TopRouteTabs({
   activeSection,
+  accountRole,
 }: {
   activeSection: RouteSection;
+  accountRole?: AccountRole | null;
 }) {
+  const showAdminRoutes = accountRole === "admin" || accountRole === "central_admin";
   const tabs: Array<{
     href: string;
     key: RouteSection;
@@ -29,16 +33,20 @@ export function TopRouteTabs({
       key: "companies",
       label: "Company Headers",
     },
-    {
-      href: "/admin/expenses",
-      key: "expense-insight",
-      label: "Expenses Insight",
-    },
-    {
-      href: "/admin/users",
-      key: "user-management",
-      label: "User Management",
-    },
+    ...(showAdminRoutes
+      ? [
+          {
+            href: "/admin/expenses",
+            key: "expense-insight" as const,
+            label: "Expenses Insight",
+          },
+          {
+            href: "/admin/users",
+            key: "user-management" as const,
+            label: "User Management",
+          },
+        ]
+      : []),
   ];
 
   return (

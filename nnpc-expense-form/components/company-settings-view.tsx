@@ -22,6 +22,7 @@ import {
   listUserCompanies,
   type CompanyRecord,
 } from "@/lib/company-data";
+import { type UserAccount } from "@/lib/user-account-data";
 
 type CompanyMessage = {
   tone: "error" | "info";
@@ -31,8 +32,8 @@ type CompanyMessage = {
 export default function CompanySettingsView() {
   return (
     <AuthGate>
-      {({ session, logout }) => (
-        <ProtectedCompanySettings logout={logout} session={session} />
+      {({ account, session, logout }) => (
+        <ProtectedCompanySettings account={account} logout={logout} session={session} />
       )}
     </AuthGate>
   );
@@ -60,9 +61,11 @@ function readCompanyLogoAsDataUrl(file: File) {
 }
 
 function ProtectedCompanySettings({
+  account,
   logout,
   session,
 }: {
+  account: UserAccount;
   logout: () => Promise<void>;
   session: AuthSession;
 }) {
@@ -240,7 +243,7 @@ function ProtectedCompanySettings({
           </div>
         </header>
 
-        <TopRouteTabs activeSection="companies" />
+        <TopRouteTabs accountRole={account.role} activeSection="companies" />
 
         <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(20rem,0.85fr)]">
           <Card className="premium-panel rounded-[2rem] border-border/60 py-0">

@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -148,7 +149,7 @@ function ProtectedAdminDashboard({
           </div>
         </header>
 
-        <TopRouteTabs activeSection="expense-insight" />
+        <TopRouteTabs accountRole={account.role} activeSection="expense-insight" />
 
         <Card className="mt-8 border-border bg-card py-0 shadow-none">
           <CardHeader className="gap-5 border-b border-border px-6 py-6 sm:px-7">
@@ -182,7 +183,9 @@ function ProtectedAdminDashboard({
             </div>
           </CardHeader>
 
-          {dashboard ? (
+          {isLoadingDashboard ? (
+            <AdminExpenseSummarySkeleton />
+          ) : dashboard ? (
             <CardContent className="grid gap-4 px-6 py-7 sm:grid-cols-3 sm:px-7">
               <div className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5">
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
@@ -232,9 +235,7 @@ function ProtectedAdminDashboard({
         <Card className="mt-6 border-border bg-card py-0 shadow-none">
           <CardContent className="px-0 py-0">
             {isLoadingDashboard ? (
-              <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
-                Loading admin expense data...
-              </div>
+              <AdminExpenseTableSkeleton />
             ) : !dashboard ? (
               <div className="px-5 py-10 text-sm text-muted-foreground sm:px-6">
                 No admin dashboard data available.
@@ -311,6 +312,42 @@ function ProtectedAdminDashboard({
           </CardContent>
         </Card>
       </div>
+    </div>
+  );
+}
+
+function AdminExpenseSummarySkeleton() {
+  return (
+    <CardContent className="grid gap-4 px-6 py-7 sm:grid-cols-3 sm:px-7">
+      {Array.from({ length: 3 }).map((_, index) => (
+        <div
+          className="flex min-h-[9rem] flex-col justify-between rounded-lg border border-border bg-muted/15 px-5 py-5"
+          key={`summary-skeleton-${index + 1}`}
+        >
+          <Skeleton className="h-4 w-24" />
+          <div className="space-y-3">
+            <Skeleton className="h-10 w-28" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+        </div>
+      ))}
+    </CardContent>
+  );
+}
+
+function AdminExpenseTableSkeleton() {
+  return (
+    <div className="space-y-3 px-5 py-6 sm:px-6">
+      <Skeleton className="h-10 w-full" />
+      {Array.from({ length: 5 }).map((_, index) => (
+        <div className="grid grid-cols-[1.4fr_1.7fr_1fr_1fr_auto] gap-3" key={`row-${index + 1}`}>
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-24" />
+        </div>
+      ))}
     </div>
   );
 }
