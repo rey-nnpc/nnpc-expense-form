@@ -1,5 +1,6 @@
 import {
   deriveUserIdFromAccessToken,
+  removeStorageObjects,
   supabaseJsonRequest,
   supabaseRpcRequest,
 } from "@/lib/supabase-api";
@@ -70,8 +71,14 @@ type AdminUserManagementPayload = {
   users?: UserAccountPayload[] | null;
 };
 
+type AdminUserStorageCleanupPayload = {
+  companyAssetPaths?: string[] | null;
+  expenseReceiptPaths?: string[] | null;
+};
+
 const USER_ACCOUNT_SELECT =
   "user_id,email,display_name,role,access_status,created_at,updated_at,approved_at,approved_by,disabled_at,disabled_by";
+const STORAGE_DELETE_BATCH_SIZE = 100;
 
 function toNumber(value: number | string | undefined | null) {
   const numericValue = Number(value);
@@ -93,6 +100,26 @@ function normalizeRole(rawRole?: string | null): AccountRole {
   }
 
   return "user";
+}
+
+function normalizeObjectPaths(rawPaths?: string[] | null) {
+  return Array.from(
+    new Set(
+      (rawPaths ?? [])
+        .map((path) => path?.trim() ?? "")
+        .filter((path) => path.length > 0),
+    ),
+  );
+}
+
+function chunkObjectPaths(objectPaths: string[]) {
+  const batches: string[][] = [];
+
+  for (let index = 0; index < objectPaths.length; index += STORAGE_DELETE_BATCH_SIZE) {
+    batches.push(objectPaths.slice(index, index + STORAGE_DELETE_BATCH_SIZE));
+  }
+
+  return batches;
 }
 
 function normalizeUserAccount(payload: UserAccountPayload | UserAccountRowPayload) {
@@ -218,4 +245,36 @@ export async function adminManageUserAccount({
     },
     fn: "admin_manage_user_account",
   });
+}
+
+export async function deleteAdminUserStorageAssets(
+  accessToken: string,
+  targetUserId: string,
+) {
+  const payload = await supabaseRpcRequest<AdminUserStorageCleanupPayload>({
+    accessToken,
+    args: {
+      p_target_user_id: targetUserId,
+    },
+    fn: "get_admin_user_storage_cleanup",
+  });
+
+  const companyAssetPaths = normalizeObjectPaths(payload.companyAssetPaths);
+  const expenseReceiptPaths = normalizeObjectPaths(payload.expenseReceiptPaths);
+
+  for (const batch of chunkObjectPaths(companyAssetPaths)) {
+    await removeStorageObjects({
+      accessToken,
+      bucketName: "company-assets",
+      objectPaths: batch,
+    });
+  }
+
+  for (const batch of chunkObjectPaths(expenseReceiptPaths)) {
+    await removeStorageObjects({
+      accessToken,
+      bucketName: "expense-receipts",
+      objectPaths: batch,
+    });
+  }
 }

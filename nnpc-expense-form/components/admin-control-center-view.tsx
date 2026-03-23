@@ -26,6 +26,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/supabase-api";
 import {
   adminManageUserAccount,
+  deleteAdminUserStorageAssets,
   getAdminUserManagement,
   type AccountRole,
   type AdminUserManagementData,
@@ -270,6 +271,10 @@ function ProtectedAdminControlCenter({
     setMessage(null);
 
     try {
+      if (action === "delete") {
+        await deleteAdminUserStorageAssets(session.accessToken, target.userId);
+      }
+
       await adminManageUserAccount({
         accessToken: session.accessToken,
         action,

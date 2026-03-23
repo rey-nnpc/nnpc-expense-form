@@ -157,6 +157,37 @@ begin
 end;
 $$;
 
+create or replace function public.has_approved_app_access()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.user_accounts
+    where user_id = auth.uid()
+      and access_status = 'approved'
+  );
+$$;
+
+create or replace function public.has_approved_central_admin_access()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.user_accounts
+    where user_id = auth.uid()
+      and access_status = 'approved'
+      and role = 'central_admin'
+  );
+$$;
+
 create or replace function public.upsert_expense_day(
   p_expense_date date,
   p_company_id uuid,
@@ -185,6 +216,10 @@ declare
 begin
   if auth.uid() is null then
     raise exception 'Not authenticated';
+  end if;
+
+  if not public.has_approved_app_access() then
+    raise exception 'Approved access required.';
   end if;
 
   insert into public.expense_reports (
@@ -573,6 +608,72 @@ begin
   return jsonb_build_object(
     'action', v_action,
     'userId', v_target.user_id
+  );
+end;
+$$;
+
+create or replace function public.get_admin_user_storage_cleanup(
+  p_target_user_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.require_admin_user_account(true);
+
+  if p_target_user_id is null then
+    raise exception 'Target user is required.';
+  end if;
+
+  if not exists (
+    select 1
+    from public.user_accounts
+    where user_id = p_target_user_id
+  ) then
+    raise exception 'Target user account not found.';
+  end if;
+
+  return jsonb_build_object(
+    'companyAssetPaths',
+      coalesce(
+        (
+          select jsonb_agg(paths.path order by paths.path)
+          from (
+            select distinct user_companies.logo_object_path as path
+            from public.user_companies
+            where user_companies.user_id = p_target_user_id
+              and user_companies.logo_bucket_name = 'company-assets'
+              and nullif(trim(user_companies.logo_object_path), '') is not null
+            union
+            select distinct expense_reports.company_logo_object_path as path
+            from public.expense_reports
+            where expense_reports.user_id = p_target_user_id
+              and expense_reports.company_logo_bucket_name = 'company-assets'
+              and nullif(trim(expense_reports.company_logo_object_path), '') is not null
+          ) as paths
+        ),
+        '[]'::jsonb
+      ),
+    'expenseReceiptPaths',
+      coalesce(
+        (
+          select jsonb_agg(paths.path order by paths.path)
+          from (
+            select distinct expense_receipts.object_path as path
+            from public.expense_receipts
+            join public.expense_items
+              on public.expense_items.id = public.expense_receipts.expense_item_id
+            join public.expense_reports
+              on public.expense_reports.id = public.expense_items.report_id
+            where public.expense_reports.user_id = p_target_user_id
+              and public.expense_receipts.bucket_name = 'expense-receipts'
+              and nullif(trim(public.expense_receipts.object_path), '') is not null
+          ) as paths
+        ),
+        '[]'::jsonb
+      )
   );
 end;
 $$;
@@ -1133,8 +1234,14 @@ create policy "Users can manage own companies"
 on public.user_companies
 for all
 to authenticated
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+using (
+  auth.uid() = user_id
+  and public.has_approved_app_access()
+)
+with check (
+  auth.uid() = user_id
+  and public.has_approved_app_access()
+);
 
 drop policy if exists "Authenticated users can read expense types" on public.expense_types;
 create policy "Authenticated users can read expense types"
@@ -1148,8 +1255,14 @@ create policy "Users can manage own reports"
 on public.expense_reports
 for all
 to authenticated
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+using (
+  auth.uid() = user_id
+  and public.has_approved_app_access()
+)
+with check (
+  auth.uid() = user_id
+  and public.has_approved_app_access()
+);
 
 drop policy if exists "Users can manage own expense items" on public.expense_items;
 create policy "Users can manage own expense items"
@@ -1157,7 +1270,8 @@ on public.expense_items
 for all
 to authenticated
 using (
-  exists (
+  public.has_approved_app_access()
+  and exists (
     select 1
     from public.expense_reports
     where public.expense_reports.id = report_id
@@ -1165,7 +1279,8 @@ using (
   )
 )
 with check (
-  exists (
+  public.has_approved_app_access()
+  and exists (
     select 1
     from public.expense_reports
     where public.expense_reports.id = report_id
@@ -1179,7 +1294,8 @@ on public.expense_receipts
 for all
 to authenticated
 using (
-  exists (
+  public.has_approved_app_access()
+  and exists (
     select 1
     from public.expense_items
     join public.expense_reports
@@ -1189,7 +1305,8 @@ using (
   )
 )
 with check (
-  exists (
+  public.has_approved_app_access()
+  and exists (
     select 1
     from public.expense_items
     join public.expense_reports
@@ -1207,6 +1324,7 @@ to authenticated
 using (
   bucket_id = 'company-assets'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 );
 
 drop policy if exists "Users can write own company assets" on storage.objects;
@@ -1217,6 +1335,7 @@ to authenticated
 with check (
   bucket_id = 'company-assets'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 );
 
 drop policy if exists "Users can update own company assets" on storage.objects;
@@ -1227,10 +1346,12 @@ to authenticated
 using (
   bucket_id = 'company-assets'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 )
 with check (
   bucket_id = 'company-assets'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 );
 
 drop policy if exists "Users can delete own company assets" on storage.objects;
@@ -1241,6 +1362,7 @@ to authenticated
 using (
   bucket_id = 'company-assets'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 );
 
 drop policy if exists "Users can read own expense receipts" on storage.objects;
@@ -1251,6 +1373,7 @@ to authenticated
 using (
   bucket_id = 'expense-receipts'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 );
 
 drop policy if exists "Users can write own expense receipts" on storage.objects;
@@ -1261,6 +1384,7 @@ to authenticated
 with check (
   bucket_id = 'expense-receipts'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 );
 
 drop policy if exists "Users can update own expense receipts" on storage.objects;
@@ -1271,10 +1395,12 @@ to authenticated
 using (
   bucket_id = 'expense-receipts'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 )
 with check (
   bucket_id = 'expense-receipts'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
 );
 
 drop policy if exists "Users can delete own expense receipts" on storage.objects;
@@ -1285,6 +1411,47 @@ to authenticated
 using (
   bucket_id = 'expense-receipts'
   and (storage.foldername(name))[1] = auth.uid()::text
+  and public.has_approved_app_access()
+);
+
+drop policy if exists "Central admins can read managed company assets" on storage.objects;
+create policy "Central admins can read managed company assets"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'company-assets'
+  and public.has_approved_central_admin_access()
+);
+
+drop policy if exists "Central admins can delete managed company assets" on storage.objects;
+create policy "Central admins can delete managed company assets"
+on storage.objects
+for delete
+to authenticated
+using (
+  bucket_id = 'company-assets'
+  and public.has_approved_central_admin_access()
+);
+
+drop policy if exists "Central admins can read managed expense receipts" on storage.objects;
+create policy "Central admins can read managed expense receipts"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'expense-receipts'
+  and public.has_approved_central_admin_access()
+);
+
+drop policy if exists "Central admins can delete managed expense receipts" on storage.objects;
+create policy "Central admins can delete managed expense receipts"
+on storage.objects
+for delete
+to authenticated
+using (
+  bucket_id = 'expense-receipts'
+  and public.has_approved_central_admin_access()
 );
 
 comment on table public.profiles is
@@ -1311,11 +1478,20 @@ comment on column public.expense_receipts.object_path is
 comment on function public.require_admin_user_account(boolean) is
   'Internal helper that enforces approved admin or central-admin access before protected admin RPCs run.';
 
+comment on function public.has_approved_app_access() is
+  'Returns true when the current authenticated user exists in user_accounts with approved app access.';
+
+comment on function public.has_approved_central_admin_access() is
+  'Returns true when the current authenticated user is an approved central admin.';
+
 comment on function public.get_admin_user_management() is
   'Approved admin-only account management payload for management and allowlist workflows.';
 
 comment on function public.admin_manage_user_account(uuid, text, text) is
   'Approved admin mutation RPC for approving, disabling, deleting, and changing user roles.';
+
+comment on function public.get_admin_user_storage_cleanup(uuid) is
+  'Central-admin helper that returns company logo and receipt object paths for a managed user before account deletion.';
 
 comment on function public.get_admin_expense_dashboard(text) is
   'Authenticated admin or central-admin dashboard aggregate for cross-user expense reporting.';
@@ -1324,11 +1500,17 @@ comment on function public.get_admin_expense_user_detail(text, uuid) is
   'Authenticated admin or central-admin detail payload for a single user expense view.';
 
 revoke all on function public.require_admin_user_account(boolean) from public;
+revoke all on function public.has_approved_app_access() from public;
+revoke all on function public.has_approved_central_admin_access() from public;
 revoke all on function public.get_admin_user_management() from public;
 revoke all on function public.admin_manage_user_account(uuid, text, text) from public;
+revoke all on function public.get_admin_user_storage_cleanup(uuid) from public;
 revoke all on function public.get_admin_expense_dashboard(text) from public;
 revoke all on function public.get_admin_expense_user_detail(text, uuid) from public;
+grant execute on function public.has_approved_app_access() to authenticated;
+grant execute on function public.has_approved_central_admin_access() to authenticated;
 grant execute on function public.get_admin_user_management() to authenticated;
 grant execute on function public.admin_manage_user_account(uuid, text, text) to authenticated;
+grant execute on function public.get_admin_user_storage_cleanup(uuid) to authenticated;
 grant execute on function public.get_admin_expense_dashboard(text) to authenticated;
 grant execute on function public.get_admin_expense_user_detail(text, uuid) to authenticated;
