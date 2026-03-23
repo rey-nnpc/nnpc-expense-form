@@ -7,8 +7,7 @@ type RouteSection =
   | "expenses"
   | "companies"
   | "expense-insight"
-  | "user-management"
-  | "admin-management";
+  | "user-management";
 
 export function TopRouteTabs({
   activeSection,
@@ -39,11 +38,6 @@ export function TopRouteTabs({
       href: "/admin/users",
       key: "user-management",
       label: "User Management",
-    },
-    {
-      href: "/admin/admins",
-      key: "admin-management",
-      label: "Admin Management",
     },
   ];
 

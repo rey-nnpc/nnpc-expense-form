@@ -1,130 +1,59 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { LogOut, ShieldCheck, Trash2, UserCog, Users } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { LogOut, ShieldCheck, Trash2, UserCheck, UserRoundCog, Users } from "lucide-react";
 import AuthGate, { type AuthSession } from "@/components/auth-gate";
 import { ThemeSettingsSheet } from "@/components/theme-settings-sheet";
 import { TopRouteTabs } from "@/components/top-route-tabs";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { SESSION_EXPIRED_MESSAGE } from "@/lib/supabase-api";
+import {
+  adminManageUserAccount,
+  getAdminUserManagement,
+  type AccountRole,
+  type AdminUserManagementData,
+  type AssignableRole,
+  type UserAccount,
+} from "@/lib/user-account-data";
 import { cn } from "@/lib/utils";
 
-type AccessStatus = "approved" | "disabled" | "pending";
-type Role = "admin" | "user";
-type AdminPrototypeSection = "admin-management" | "user-management";
-
-type PrototypeAccount = {
-  accessStatus: AccessStatus;
-  approvedAt: string | null;
-  createdAt: string;
-  disabledAt: string | null;
-  displayName: string;
-  email: string;
-  role: Role;
-  team: string;
-  userId: string;
+type AdminMessage = {
+  text: string;
+  tone: "error" | "info";
 };
 
-const INITIAL_ACCOUNTS: PrototypeAccount[] = [
-  {
-    accessStatus: "approved",
-    approvedAt: "2026-03-02",
-    createdAt: "2026-02-28",
-    disabledAt: null,
-    displayName: "Amina Patel",
-    email: "amina@nnpc.local",
-    role: "admin",
-    team: "Finance Ops",
-    userId: "admin-amina",
-  },
-  {
-    accessStatus: "approved",
-    approvedAt: "2026-03-03",
-    createdAt: "2026-03-01",
-    disabledAt: null,
-    displayName: "Noah Kim",
-    email: "noah@nnpc.local",
-    role: "admin",
-    team: "Operations",
-    userId: "admin-noah",
-  },
-  {
-    accessStatus: "approved",
-    approvedAt: "2026-03-06",
-    createdAt: "2026-03-05",
-    disabledAt: null,
-    displayName: "Jules Carter",
-    email: "jules@nnpc.local",
-    role: "user",
-    team: "Field Team",
-    userId: "user-jules",
-  },
-  {
-    accessStatus: "approved",
-    approvedAt: "2026-03-08",
-    createdAt: "2026-03-07",
-    disabledAt: null,
-    displayName: "Mina Chao",
-    email: "mina@nnpc.local",
-    role: "user",
-    team: "Procurement",
-    userId: "user-mina",
-  },
-  {
-    accessStatus: "pending",
-    approvedAt: null,
-    createdAt: "2026-03-19",
-    disabledAt: null,
-    displayName: "Daniel Moore",
-    email: "daniel@nnpc.local",
-    role: "user",
-    team: "Logistics",
-    userId: "pending-daniel",
-  },
-  {
-    accessStatus: "pending",
-    approvedAt: null,
-    createdAt: "2026-03-18",
-    disabledAt: null,
-    displayName: "Sora Bell",
-    email: "sora@nnpc.local",
-    role: "user",
-    team: "Admin Support",
-    userId: "pending-sora",
-  },
-  {
-    accessStatus: "disabled",
-    approvedAt: "2026-03-04",
-    createdAt: "2026-03-02",
-    disabledAt: "2026-03-16",
-    displayName: "Ivy Nguyen",
-    email: "ivy@nnpc.local",
-    role: "user",
-    team: "Finance Ops",
-    userId: "disabled-ivy",
-  },
-  {
-    accessStatus: "disabled",
-    approvedAt: "2026-03-05",
-    createdAt: "2026-03-03",
-    disabledAt: "2026-03-17",
-    displayName: "Marco Ellis",
-    email: "marco@nnpc.local",
-    role: "admin",
-    team: "Regional Ops",
-    userId: "disabled-marco",
-  },
-];
+type ManagementTab = "allowlist" | "management";
+type PendingRoleReview = {
+  nextRole: AssignableRole;
+  user: UserAccount;
+} | null;
+
+function normalizeInitialTab(tab?: string): ManagementTab {
+  return tab === "allowlist" ? "allowlist" : "management";
+}
 
 function formatShortDate(rawDate: string | null) {
   if (!rawDate) {
     return "Not set";
   }
 
-  const parsedDate = new Date(`${rawDate}T00:00:00`);
+  const parsedDate = new Date(rawDate);
 
   if (Number.isNaN(parsedDate.getTime())) {
     return rawDate;
@@ -137,22 +66,29 @@ function formatShortDate(rawDate: string | null) {
   }).format(parsedDate);
 }
 
-function getTodayDateStamp() {
-  const now = new Date();
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-  const parts = formatter.formatToParts(now);
-  const year = parts.find((part) => part.type === "year")?.value ?? "2026";
-  const month = parts.find((part) => part.type === "month")?.value ?? "03";
-  const day = parts.find((part) => part.type === "day")?.value ?? "20";
-
-  return `${year}-${month}-${day}`;
+function roleLabel(role: AccountRole) {
+  switch (role) {
+    case "admin":
+      return "Admin";
+    case "central_admin":
+      return "Central Admin";
+    default:
+      return "User";
+  }
 }
 
-function statusBadgeClassName(status: AccessStatus) {
+function roleAbilityCopy(role: AccountRole) {
+  switch (role) {
+    case "admin":
+      return "Approves or disables standard user access";
+    case "central_admin":
+      return "Approves users, changes roles, and removes accounts";
+    default:
+      return "Uses the main expense system";
+  }
+}
+
+function statusBadgeClassName(status: UserAccount["accessStatus"]) {
   switch (status) {
     case "approved":
       return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/50 dark:text-emerald-300";
@@ -163,198 +99,215 @@ function statusBadgeClassName(status: AccessStatus) {
   }
 }
 
-function roleBadgeClassName(role: Role) {
-  return role === "admin"
-    ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/70 dark:bg-sky-950/50 dark:text-sky-300"
-    : "border-border bg-background text-foreground";
+function roleBadgeClassName(role: AccountRole) {
+  switch (role) {
+    case "admin":
+      return "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/70 dark:bg-sky-950/50 dark:text-sky-300";
+    case "central_admin":
+      return "border-slate-300 bg-slate-100 text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100";
+    default:
+      return "border-border bg-background text-foreground";
+  }
 }
 
-function sortByName(accounts: PrototypeAccount[]) {
-  return [...accounts].sort((left, right) => left.displayName.localeCompare(right.displayName));
+function defaultAssignableRole(role: AccountRole): AssignableRole {
+  return role === "admin" ? "admin" : "user";
 }
 
-function sortByNewest(
-  accounts: PrototypeAccount[],
-  accessor: (account: PrototypeAccount) => string | null,
-) {
-  return [...accounts].sort((left, right) => {
-    const leftValue = accessor(left) ?? "";
-    const rightValue = accessor(right) ?? "";
+function getRowStatusDate(account: UserAccount) {
+  if (account.accessStatus === "disabled") {
+    return account.disabledAt ?? account.updatedAt;
+  }
 
-    return rightValue.localeCompare(leftValue);
-  });
-}
+  if (account.accessStatus === "approved") {
+    return account.approvedAt ?? account.updatedAt;
+  }
 
-function getApprovedAdminCount(accounts: PrototypeAccount[]) {
-  return accounts.filter(
-    (account) => account.accessStatus === "approved" && account.role === "admin",
-  ).length;
+  return account.createdAt;
 }
 
 export default function AdminControlCenterView({
-  section,
+  initialTab,
 }: {
-  section: AdminPrototypeSection;
+  initialTab?: string;
 }) {
   return (
-    <AuthGate>
-      {({ session, logout }) => (
-        <ProtectedAdminControlCenter logout={logout} section={section} session={session} />
+    <AuthGate allowedRoles={["admin", "central_admin"]}>
+      {({ account, logout, refreshAccount, session }) => (
+        <ProtectedAdminControlCenter
+          account={account}
+          initialTab={normalizeInitialTab(initialTab)}
+          logout={logout}
+          refreshAccount={refreshAccount}
+          session={session}
+        />
       )}
     </AuthGate>
   );
 }
 
 function ProtectedAdminControlCenter({
+  account,
+  initialTab,
   logout,
-  section,
+  refreshAccount,
   session,
 }: {
+  account: UserAccount;
+  initialTab: ManagementTab;
   logout: () => Promise<void>;
-  section: AdminPrototypeSection;
+  refreshAccount: () => Promise<void>;
   session: AuthSession;
 }) {
-  const [accounts, setAccounts] = useState(INITIAL_ACCOUNTS);
-  const [approvalRoles, setApprovalRoles] = useState<Record<string, Role>>(() =>
-    Object.fromEntries(INITIAL_ACCOUNTS.map((account) => [account.userId, account.role])),
-  );
+  const [activeTab, setActiveTab] = useState<ManagementTab>(initialTab);
+  const [data, setData] = useState<AdminUserManagementData | null>(null);
+  const [message, setMessage] = useState<AdminMessage | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [requestNonce, setRequestNonce] = useState(0);
+  const [activeMutationKey, setActiveMutationKey] = useState<string | null>(null);
+  const [approvalRoles, setApprovalRoles] = useState<Record<string, AssignableRole>>({});
+  const [pendingRoleReview, setPendingRoleReview] = useState<PendingRoleReview>(null);
 
-  const pendingAccounts = sortByNewest(
-    accounts.filter((account) => account.accessStatus === "pending"),
-    (account) => account.createdAt,
-  );
-  const approvedAccounts = sortByName(
-    accounts.filter((account) => account.accessStatus === "approved"),
-  );
-  const disabledAccounts = sortByNewest(
-    accounts.filter((account) => account.accessStatus === "disabled"),
-    (account) => account.disabledAt ?? account.createdAt,
-  );
-  const approvedAdmins = sortByName(
-    approvedAccounts.filter((account) => account.role === "admin"),
-  );
-  const approvedMembers = sortByName(
-    approvedAccounts.filter((account) => account.role === "user"),
-  );
+  const isCentralAdmin = account.role === "central_admin";
 
-  const isCurrentOperator = (account: PrototypeAccount) =>
-    account.email.toLowerCase() === session.userEmail.toLowerCase();
+  useEffect(() => {
+    let isActive = true;
 
-  const isProtectedAdmin = (
-    account: PrototypeAccount,
-    sourceAccounts: PrototypeAccount[] = accounts,
-  ) =>
-    account.accessStatus === "approved" &&
-    account.role === "admin" &&
-    (getApprovedAdminCount(sourceAccounts) === 1 || isCurrentOperator(account));
+    const loadData = async () => {
+      const nextData = await getAdminUserManagement(session.accessToken);
 
-  const updateApprovalRole = (userId: string, role: Role) => {
-    setApprovalRoles((currentRoles) => ({
-      ...currentRoles,
-      [userId]: role,
-    }));
-  };
+      if (!isActive) {
+        return;
+      }
 
-  const handleApprove = (userId: string) => {
-    const nextRole = approvalRoles[userId] ?? "user";
+      setData(nextData);
+      setApprovalRoles((currentRoles) => {
+        const nextRoles = { ...currentRoles };
 
-    setAccounts((currentAccounts) =>
-      currentAccounts.map((account) =>
-        account.userId === userId
-          ? {
-              ...account,
-              accessStatus: "approved",
-              approvedAt: getTodayDateStamp(),
-              disabledAt: null,
-              role: nextRole,
-            }
-          : account,
-      ),
-    );
-  };
+        for (const row of nextData.users) {
+          if (row.role === "central_admin") {
+            continue;
+          }
 
-  const handleDisapprove = (userId: string) => {
-    setAccounts((currentAccounts) =>
-      currentAccounts.map((account) =>
-        account.userId === userId && !isProtectedAdmin(account, currentAccounts)
-          ? {
-              ...account,
-              accessStatus: "disabled",
-              disabledAt: getTodayDateStamp(),
-            }
-          : account,
-      ),
-    );
-  };
-
-  const handleRoleChange = (userId: string, nextRole: Role) => {
-    setAccounts((currentAccounts) =>
-      currentAccounts.map((account) => {
-        if (account.userId !== userId) {
-          return account;
+          nextRoles[row.userId] =
+            row.accessStatus === "pending"
+              ? currentRoles[row.userId] ?? defaultAssignableRole(row.role)
+              : defaultAssignableRole(row.role);
         }
 
-        if (account.accessStatus !== "approved") {
-          return account;
+        return nextRoles;
+      });
+    };
+
+    void loadData()
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return;
+        }
+
+        if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+          void logout();
+          return;
         }
 
         if (
-          account.role === "admin" &&
-          nextRole === "user" &&
-          isProtectedAdmin(account, currentAccounts)
+          error instanceof Error &&
+          (error.message === "Approved access required." ||
+            error.message === "Admin access required." ||
+            error.message === "Central admin access required.")
         ) {
-          return account;
+          void refreshAccount();
         }
 
-        return {
-          ...account,
-          role: nextRole,
-        };
-      }),
-    );
-  };
-
-  const handleRemove = (userId: string) => {
-    const targetAccount = accounts.find((account) => account.userId === userId);
-
-    if (!targetAccount) {
-      return;
-    }
-
-    if (isProtectedAdmin(targetAccount)) {
-      return;
-    }
-
-    if (!window.confirm(`Remove ${targetAccount.displayName} from this prototype list?`)) {
-      return;
-    }
-
-    setAccounts((currentAccounts) =>
-      currentAccounts.filter((account) => account.userId !== userId),
-    );
-    setApprovalRoles((currentRoles) => {
-      const nextRoles = { ...currentRoles };
-
-      delete nextRoles[userId];
-
-      return nextRoles;
-    });
-  };
-
-  const pageCopy =
-    section === "user-management"
-      ? {
-          description:
-            "Review signups, approve access, disapprove accounts, and remove users from the system. Prototype only, no live mutations yet.",
-          navKey: "user-management" as const,
-          title: "User management",
+        setMessage({
+          tone: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : "The user management workspace could not be loaded.",
+        });
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoading(false);
         }
-      : {
-          description:
-            "Adjust admin privileges, demote admins, and remove approved accounts from the system. Prototype only, no live mutations yet.",
-          navKey: "admin-management" as const,
-          title: "Admin management",
-        };
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [logout, refreshAccount, requestNonce, session.accessToken]);
+
+  const users = data?.users ?? [];
+  const managedUsers = users.filter((user) => user.accessStatus !== "pending");
+  const allowlistUsers = users.filter((user) => user.accessStatus === "pending");
+
+  const refreshManagementData = () => {
+    setIsLoading(true);
+    setRequestNonce((currentNonce) => currentNonce + 1);
+  };
+
+  const runAction = async ({
+    action,
+    confirmCopy,
+    role,
+    successCopy,
+    target,
+  }: {
+    action: "approve" | "delete" | "disable" | "set_role";
+    confirmCopy?: string;
+    role?: AssignableRole;
+    successCopy?: string;
+    target: UserAccount;
+  }) => {
+    if (confirmCopy && !window.confirm(confirmCopy)) {
+      return;
+    }
+
+    const mutationKey = `${action}:${target.userId}`;
+    setActiveMutationKey(mutationKey);
+    setMessage(null);
+
+    try {
+      await adminManageUserAccount({
+        accessToken: session.accessToken,
+        action,
+        role,
+        targetUserId: target.userId,
+      });
+      if (successCopy) {
+        setMessage({
+          tone: "info",
+          text: successCopy,
+        });
+      }
+      refreshManagementData();
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+        void logout();
+        return;
+      }
+
+      if (
+        error instanceof Error &&
+        (error.message === "Approved access required." ||
+          error.message === "Admin access required." ||
+          error.message === "Central admin access required.")
+      ) {
+        void refreshAccount();
+      }
+
+      setMessage({
+        tone: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "The requested account change could not be completed.",
+      });
+    } finally {
+      setActiveMutationKey(null);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -362,13 +315,14 @@ function ProtectedAdminControlCenter({
         <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Central Admin
+              {account.role === "central_admin" ? "Central Admin" : "Admin"}
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-[2.6rem]">
-              {pageCopy.title}
+              User management
             </h1>
             <p className="mt-3 max-w-2xl text-base leading-7 text-muted-foreground">
-              {pageCopy.description}
+              Review signups, control access, and manage who stays a standard user or an
+              admin. Central-admin promotion still stays in the database on purpose.
             </p>
             <p className="mt-3 text-sm text-muted-foreground">{session.userEmail}</p>
           </div>
@@ -382,453 +336,470 @@ function ProtectedAdminControlCenter({
           </div>
         </header>
 
-        <TopRouteTabs activeSection={pageCopy.navKey} />
+        <TopRouteTabs activeSection="user-management" />
 
         <section className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <SummaryCard
-            description="Waiting for central admin review"
+            description="Waiting for access approval"
             icon={<Users className="size-4" />}
             label="Pending queue"
-            value={pendingAccounts.length}
+            value={data?.totals.pendingUsers ?? 0}
           />
           <SummaryCard
-            description="Allowed into the main system"
-            icon={<ShieldCheck className="size-4" />}
+            description="Approved accounts that can use the app"
+            icon={<UserCheck className="size-4" />}
             label="Approved users"
-            value={approvedAccounts.length}
+            value={data?.totals.approvedUsers ?? 0}
           />
           <SummaryCard
-            description="Blocked or disapproved accounts"
-            icon={<UserCog className="size-4" />}
+            description="Accounts currently blocked"
+            icon={<UserRoundCog className="size-4" />}
             label="Disabled users"
-            value={disabledAccounts.length}
+            value={data?.totals.disabledUsers ?? 0}
           />
           <SummaryCard
-            description="Approved admins with full access"
+            description="Approved admin or central-admin accounts"
             icon={<ShieldCheck className="size-4" />}
-            label="Active admins"
-            value={approvedAdmins.length}
+            label="Elevated roles"
+            value={data?.totals.elevatedUsers ?? 0}
           />
         </section>
 
-        <div className="mt-6 space-y-4">
-          {section === "user-management" ? (
-            <UserManagementContent
-              accounts={{
-                approvedAccounts,
-                disabledAccounts,
-                pendingAccounts,
-              }}
-              approvalRoles={approvalRoles}
-              formatShortDate={formatShortDate}
-              handleApprove={handleApprove}
-              handleDisapprove={handleDisapprove}
-              handleRemove={handleRemove}
-              isCurrentOperator={isCurrentOperator}
-              isProtectedAdmin={isProtectedAdmin}
-              updateApprovalRole={updateApprovalRole}
+        <Card className="mt-6 border-border bg-card py-0 shadow-none">
+          <CardContent className="flex flex-col gap-3 px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                {isCentralAdmin
+                  ? "Central admins can approve users, change roles between user and admin, and remove accounts."
+                  : "Admins can approve or disable standard user access. Role changes and removals stay with central admins."}
+              </p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                Pending approvals stay on Allowlist. Existing approved or disabled accounts stay on Management.
+              </p>
+            </div>
+            <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
+              {roleLabel(account.role)}
+            </Badge>
+          </CardContent>
+        </Card>
+
+        {message ? (
+          <Alert
+            className="mt-5 border-border bg-card"
+            variant={message.tone === "error" ? "destructive" : "default"}
+          >
+            <AlertTitle>
+              {message.tone === "error" ? "User Management Unavailable" : "User Management"}
+            </AlertTitle>
+            <AlertDescription>{message.text}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <Tabs className="mt-6" value={activeTab} onValueChange={(value) => setActiveTab(value as ManagementTab)}>
+          <TabsList className="h-auto rounded-xl border border-border bg-muted/30 p-1">
+            <TabsTrigger className="min-w-[9rem] rounded-lg px-4 py-2.5" value="management">
+              Management
+            </TabsTrigger>
+            <TabsTrigger className="min-w-[9rem] rounded-lg px-4 py-2.5" value="allowlist">
+              Allowlist
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent className="mt-4" value="management">
+            <ManagementTableCard
+              currentAccount={account}
+              isCentralAdmin={isCentralAdmin}
+              isLoading={isLoading}
+              managedUsers={managedUsers}
+              mutatingKey={activeMutationKey}
+              pendingRoles={approvalRoles}
+              setPendingRoleReview={setPendingRoleReview}
+              runAction={runAction}
             />
-          ) : (
-            <AdminManagementContent
-              approvedAdmins={approvedAdmins}
-              approvedMembers={approvedMembers}
-              handleRemove={handleRemove}
-              handleRoleChange={handleRoleChange}
-              isCurrentOperator={isCurrentOperator}
-              isProtectedAdmin={isProtectedAdmin}
+          </TabsContent>
+
+          <TabsContent className="mt-4" value="allowlist">
+            <AllowlistTableCard
+              allowlistUsers={allowlistUsers}
+              isCentralAdmin={isCentralAdmin}
+              isLoading={isLoading}
+              mutatingKey={activeMutationKey}
+              pendingRoles={approvalRoles}
+              runAction={runAction}
+              setPendingRole={(userId, role) =>
+                setApprovalRoles((currentRoles) => ({
+                  ...currentRoles,
+                  [userId]: role,
+                }))
+              }
             />
-          )}
-        </div>
+          </TabsContent>
+        </Tabs>
+
+        <AlertDialog
+          open={pendingRoleReview !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingRoleReview(null);
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Confirm role change</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingRoleReview
+                  ? `${pendingRoleReview.user.displayName} will change from ${roleLabel(
+                      pendingRoleReview.user.role,
+                    )} to ${roleLabel(pendingRoleReview.nextRole)}.`
+                  : "Review the selected role change before applying it."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="rounded-lg border border-border bg-muted/25 px-4 py-3 text-sm text-muted-foreground">
+              The current role stays unchanged until you confirm this action.
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => setPendingRoleReview(null)}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (!pendingRoleReview) {
+                    return;
+                  }
+
+                  const review = pendingRoleReview;
+                  setPendingRoleReview(null);
+                  void runAction({
+                    action: "set_role",
+                    role: review.nextRole,
+                    successCopy: `${review.user.displayName} is now ${roleLabel(review.nextRole)}.`,
+                    target: review.user,
+                  });
+                }}
+              >
+                Confirm role change
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
 }
 
-function UserManagementContent({
-  accounts,
-  approvalRoles,
-  formatShortDate,
-  handleApprove,
-  handleDisapprove,
-  handleRemove,
-  isCurrentOperator,
-  isProtectedAdmin,
-  updateApprovalRole,
+function ManagementTableCard({
+  currentAccount,
+  isCentralAdmin,
+  isLoading,
+  managedUsers,
+  mutatingKey,
+  pendingRoles,
+  setPendingRoleReview,
+  runAction,
 }: {
-  accounts: {
-    approvedAccounts: PrototypeAccount[];
-    disabledAccounts: PrototypeAccount[];
-    pendingAccounts: PrototypeAccount[];
-  };
-  approvalRoles: Record<string, Role>;
-  formatShortDate: (value: string | null) => string;
-  handleApprove: (userId: string) => void;
-  handleDisapprove: (userId: string) => void;
-  handleRemove: (userId: string) => void;
-  isCurrentOperator: (account: PrototypeAccount) => boolean;
-  isProtectedAdmin: (account: PrototypeAccount) => boolean;
-  updateApprovalRole: (userId: string, role: Role) => void;
+  currentAccount: UserAccount;
+  isCentralAdmin: boolean;
+  isLoading: boolean;
+  managedUsers: UserAccount[];
+  mutatingKey: string | null;
+  pendingRoles: Record<string, AssignableRole>;
+  setPendingRoleReview: (value: PendingRoleReview) => void;
+  runAction: (input: {
+    action: "approve" | "delete" | "disable" | "set_role";
+    confirmCopy?: string;
+    role?: AssignableRole;
+    successCopy?: string;
+    target: UserAccount;
+  }) => Promise<void>;
 }) {
-  const { approvedAccounts, disabledAccounts, pendingAccounts } = accounts;
-
   return (
-    <div className="space-y-5">
-      <ManagementSectionCard
-        count={pendingAccounts.length}
-        description="Approve, disapprove, or remove new signups. Role is selected at approval time."
-        title="Pending approvals"
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/40">
-                <TableHead className="min-w-[12rem] px-4 py-3">User</TableHead>
-                <TableHead className="min-w-[13rem] px-4 py-3">Email</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Team</TableHead>
-                <TableHead className="min-w-[8rem] px-4 py-3">Requested</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Approve As</TableHead>
-                <TableHead className="min-w-[11rem] px-4 py-3 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pendingAccounts.length === 0 ? (
-                <EmptyTableRow colSpan={6} message="No pending signups in this prototype queue." />
-              ) : (
-                pendingAccounts.map((account) => (
-                  <TableRow key={account.userId}>
+    <ManagementSectionCard
+      count={managedUsers.length}
+      description="Approved and disabled accounts live here. Role changes are only available to central admins."
+      title="Management"
+    >
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/35">
+              <TableHead className="min-w-[13rem] px-4 py-3">User</TableHead>
+              <TableHead className="min-w-[14rem] px-4 py-3">Email</TableHead>
+              <TableHead className="min-w-[10rem] px-4 py-3">Role</TableHead>
+              <TableHead className="min-w-[16rem] px-4 py-3">Abilities</TableHead>
+              <TableHead className="min-w-[9rem] px-4 py-3">Status</TableHead>
+              <TableHead className="min-w-[8rem] px-4 py-3">Updated</TableHead>
+              <TableHead className="min-w-[12rem] px-4 py-3 text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <EmptyTableRow colSpan={7} message="Loading managed users..." />
+            ) : managedUsers.length === 0 ? (
+              <EmptyTableRow colSpan={7} message="No approved or disabled accounts are available." />
+            ) : (
+              managedUsers.map((user) => {
+                const isCurrentUser = user.userId === currentAccount.userId;
+                const currentAssignableRole = defaultAssignableRole(user.role);
+                const canEditRole =
+                  isCentralAdmin && user.role !== "central_admin" && user.accessStatus !== "pending";
+                const canRemove = isCentralAdmin && user.role !== "central_admin" && !isCurrentUser;
+                const canApprove =
+                  user.accessStatus === "disabled" &&
+                  (isCentralAdmin || user.role === "user");
+                const canDisable =
+                  user.accessStatus === "approved" &&
+                  !isCurrentUser &&
+                  (isCentralAdmin ? user.role !== "central_admin" : user.role === "user");
+                const rowLocked = isCurrentUser || user.role === "central_admin";
+                const rowMutationKey =
+                  mutatingKey?.split(":")[1] === user.userId ? mutatingKey : null;
+                const selectedRole = pendingRoles[user.userId] ?? currentAssignableRole;
+
+                return (
+                  <TableRow key={user.userId}>
                     <TableCell className="px-4 py-4 align-middle">
-                      <div className="font-medium">{account.displayName}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">
-                        {account.accessStatus}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{user.displayName}</span>
+                        {isCurrentUser ? (
+                          <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
+                            You
+                          </Badge>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                      {account.email}
-                    </TableCell>
-                    <TableCell className="px-4 py-4 align-middle">{account.team}</TableCell>
-                    <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                      {formatShortDate(account.createdAt)}
+                      {user.email}
                     </TableCell>
                     <TableCell className="px-4 py-4 align-middle">
-                      <RoleSelect
-                        onValueChange={(nextRole) => updateApprovalRole(account.userId, nextRole)}
-                        value={approvalRoles[account.userId] ?? account.role}
-                      />
+                      {canEditRole ? (
+                        <RoleSelect
+                          disabled={rowMutationKey !== null}
+                          value={currentAssignableRole}
+                          onValueChange={(nextRole) => {
+                            if (nextRole === currentAssignableRole) {
+                              return;
+                            }
+
+                            setPendingRoleReview({
+                              nextRole,
+                              user,
+                            });
+                          }}
+                        />
+                      ) : (
+                        <RoleBadge role={user.role} />
+                      )}
+                    </TableCell>
+                    <TableCell className="px-4 py-4 align-middle">
+                      <p className="text-sm leading-6 text-foreground">{roleAbilityCopy(user.role)}</p>
+                      {canEditRole ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Select a different role to review and confirm the change.
+                        </p>
+                      ) : null}
+                      {rowLocked && user.role === "central_admin" ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Central-admin state stays in SQL.
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="px-4 py-4 align-middle">
+                      <StatusBadge status={user.accessStatus} />
+                    </TableCell>
+                    <TableCell className="px-4 py-4 align-middle text-muted-foreground">
+                      {formatShortDate(getRowStatusDate(user))}
                     </TableCell>
                     <TableCell className="px-4 py-4 align-middle">
                       <RowActions align="end">
-                        <Button size="sm" type="button" onClick={() => handleApprove(account.userId)}>
-                          Approve
-                        </Button>
-                        <Button
-                          size="sm"
-                          type="button"
-                          variant="outline"
-                          onClick={() => handleDisapprove(account.userId)}
-                        >
-                          Reject
-                        </Button>
-                        <RemoveActionButton
-                          onClick={() => handleRemove(account.userId)}
-                          title={`Remove ${account.displayName}`}
-                        />
-                      </RowActions>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </ManagementSectionCard>
-
-      <ManagementSectionCard
-        count={approvedAccounts.length}
-        description="Approved users can use the system. This page only handles access state, not role editing."
-        title="Approved access"
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/40">
-                <TableHead className="min-w-[12rem] px-4 py-3">User</TableHead>
-                <TableHead className="min-w-[13rem] px-4 py-3">Email</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Team</TableHead>
-                <TableHead className="min-w-[8rem] px-4 py-3">Role</TableHead>
-                <TableHead className="min-w-[8rem] px-4 py-3">Approved</TableHead>
-                <TableHead className="min-w-[10rem] px-4 py-3 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {approvedAccounts.length === 0 ? (
-                <EmptyTableRow colSpan={6} message="No approved users in this prototype state." />
-              ) : (
-                approvedAccounts.map((account) => {
-                  const rowLocked = isProtectedAdmin(account);
-
-                  return (
-                    <TableRow key={account.userId}>
-                      <TableCell className="px-4 py-4 align-middle">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">{account.displayName}</span>
-                          {isCurrentOperator(account) ? (
-                            <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
-                              You
-                            </Badge>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                        {account.email}
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle">{account.team}</TableCell>
-                      <TableCell className="px-4 py-4 align-middle">
-                        <RoleBadge role={account.role} />
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                        {formatShortDate(account.approvedAt)}
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle">
-                        <RowActions align="end">
+                        {canApprove ? (
                           <Button
-                            disabled={rowLocked}
+                            disabled={rowMutationKey !== null}
+                            size="sm"
+                            type="button"
+                            onClick={() =>
+                              void runAction({
+                                action: "approve",
+                                role: selectedRole,
+                                target: user,
+                              })
+                            }
+                          >
+                            Approve
+                          </Button>
+                        ) : null}
+                        {canDisable ? (
+                          <Button
+                            disabled={rowMutationKey !== null}
                             size="sm"
                             type="button"
                             variant="outline"
-                            onClick={() => handleDisapprove(account.userId)}
+                            onClick={() =>
+                              void runAction({
+                                action: "disable",
+                                target: user,
+                              })
+                            }
                           >
                             Disable
                           </Button>
-                          <RemoveActionButton
-                            disabled={rowLocked}
-                            onClick={() => handleRemove(account.userId)}
-                            title={`Remove ${account.displayName}`}
-                          />
-                        </RowActions>
-                        {rowLocked ? (
-                          <p className="mt-2 text-right text-xs text-muted-foreground">
-                            Keep one approved admin and protect the current operator.
-                          </p>
                         ) : null}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </ManagementSectionCard>
-
-      <ManagementSectionCard
-        count={disabledAccounts.length}
-        description="Re-approve disabled accounts with a chosen role, or remove them from the system."
-        title="Disabled users"
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/40">
-                <TableHead className="min-w-[12rem] px-4 py-3">User</TableHead>
-                <TableHead className="min-w-[13rem] px-4 py-3">Email</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Team</TableHead>
-                <TableHead className="min-w-[8rem] px-4 py-3">Disabled</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Approve As</TableHead>
-                <TableHead className="min-w-[10rem] px-4 py-3 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {disabledAccounts.length === 0 ? (
-                <EmptyTableRow colSpan={6} message="No disabled users in this prototype state." />
-              ) : (
-                disabledAccounts.map((account) => (
-                  <TableRow key={account.userId}>
-                    <TableCell className="px-4 py-4 align-middle">
-                      <div className="font-medium">{account.displayName}</div>
-                      <div className="mt-1">
-                        <RoleBadge role={account.role} />
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                      {account.email}
-                    </TableCell>
-                    <TableCell className="px-4 py-4 align-middle">{account.team}</TableCell>
-                    <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                      {formatShortDate(account.disabledAt)}
-                    </TableCell>
-                    <TableCell className="px-4 py-4 align-middle">
-                      <RoleSelect
-                        onValueChange={(nextRole) => updateApprovalRole(account.userId, nextRole)}
-                        value={approvalRoles[account.userId] ?? account.role}
-                      />
-                    </TableCell>
-                    <TableCell className="px-4 py-4 align-middle">
-                      <RowActions align="end">
-                        <Button size="sm" type="button" onClick={() => handleApprove(account.userId)}>
-                          Approve
-                        </Button>
-                        <RemoveActionButton
-                          onClick={() => handleRemove(account.userId)}
-                          title={`Remove ${account.displayName}`}
-                        />
+                        {canRemove ? (
+                          <RemoveActionButton
+                            disabled={rowMutationKey !== null}
+                            title={`Remove ${user.displayName}`}
+                            onClick={() =>
+                              void runAction({
+                                action: "delete",
+                                confirmCopy: `Remove ${user.displayName} from the system? This also deletes their auth account and related data.`,
+                                target: user,
+                              })
+                            }
+                          />
+                        ) : null}
                       </RowActions>
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </ManagementSectionCard>
-    </div>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </ManagementSectionCard>
   );
 }
 
-function AdminManagementContent({
-  approvedAdmins,
-  approvedMembers,
-  handleRemove,
-  handleRoleChange,
-  isCurrentOperator,
-  isProtectedAdmin,
+function AllowlistTableCard({
+  allowlistUsers,
+  isCentralAdmin,
+  isLoading,
+  mutatingKey,
+  pendingRoles,
+  runAction,
+  setPendingRole,
 }: {
-  approvedAdmins: PrototypeAccount[];
-  approvedMembers: PrototypeAccount[];
-  handleRemove: (userId: string) => void;
-  handleRoleChange: (userId: string, role: Role) => void;
-  isCurrentOperator: (account: PrototypeAccount) => boolean;
-  isProtectedAdmin: (account: PrototypeAccount) => boolean;
+  allowlistUsers: UserAccount[];
+  isCentralAdmin: boolean;
+  isLoading: boolean;
+  mutatingKey: string | null;
+  pendingRoles: Record<string, AssignableRole>;
+  runAction: (input: {
+    action: "approve" | "delete" | "disable" | "set_role";
+    confirmCopy?: string;
+    role?: AssignableRole;
+    successCopy?: string;
+    target: UserAccount;
+  }) => Promise<void>;
+  setPendingRole: (userId: string, role: AssignableRole) => void;
 }) {
   return (
-    <div className="space-y-5">
-      <ManagementSectionCard
-        count={approvedAdmins.length}
-        description="Current admins can be demoted back to user or removed, with the last approved admin protected."
-        title="Admin roster"
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/40">
-                <TableHead className="min-w-[12rem] px-4 py-3">Admin</TableHead>
-                <TableHead className="min-w-[13rem] px-4 py-3">Email</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Team</TableHead>
-                <TableHead className="min-w-[8rem] px-4 py-3">Status</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Role</TableHead>
-                <TableHead className="min-w-[5rem] px-4 py-3 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {approvedAdmins.length === 0 ? (
-                <EmptyTableRow colSpan={6} message="No approved admins are available." />
-              ) : (
-                approvedAdmins.map((account) => {
-                  const rowLocked = isProtectedAdmin(account);
+    <ManagementSectionCard
+      count={allowlistUsers.length}
+      description="New signups land here first. Admins can approve or disapprove standard access, while central admins can also approve as admin and remove accounts."
+      title="Allowlist"
+    >
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/35">
+              <TableHead className="min-w-[13rem] px-4 py-3">User</TableHead>
+              <TableHead className="min-w-[14rem] px-4 py-3">Email</TableHead>
+              <TableHead className="min-w-[8rem] px-4 py-3">Signed up</TableHead>
+              <TableHead className="min-w-[10rem] px-4 py-3">Approve as</TableHead>
+              <TableHead className="min-w-[14rem] px-4 py-3 text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <EmptyTableRow colSpan={5} message="Loading pending signups..." />
+            ) : allowlistUsers.length === 0 ? (
+              <EmptyTableRow colSpan={5} message="No pending signups are waiting for review." />
+            ) : (
+              allowlistUsers.map((user) => {
+                const rowMutationKey =
+                  mutatingKey?.split(":")[1] === user.userId ? mutatingKey : null;
 
-                  return (
-                    <TableRow key={account.userId}>
-                      <TableCell className="px-4 py-4 align-middle">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">{account.displayName}</span>
-                          {isCurrentOperator(account) ? (
-                            <Badge className="rounded-full px-2.5 py-0.5" variant="outline">
-                              You
-                            </Badge>
-                          ) : null}
-                        </div>
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                        {account.email}
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle">{account.team}</TableCell>
-                      <TableCell className="px-4 py-4 align-middle">
-                        <StatusBadge status={account.accessStatus} />
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle">
-                        <RoleSelect
-                          disabled={rowLocked}
-                          onValueChange={(nextRole) => handleRoleChange(account.userId, nextRole)}
-                          value={account.role}
-                        />
-                      </TableCell>
-                      <TableCell className="px-4 py-4 align-middle">
-                        <RowActions align="end">
-                          <RemoveActionButton
-                            disabled={rowLocked}
-                            onClick={() => handleRemove(account.userId)}
-                            title={`Remove ${account.displayName}`}
-                          />
-                        </RowActions>
-                        {rowLocked ? (
-                          <p className="mt-2 text-right text-xs text-muted-foreground">
-                            This row is locked to avoid removing the current or last approved admin.
-                          </p>
-                        ) : null}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </ManagementSectionCard>
-
-      <ManagementSectionCard
-        count={approvedMembers.length}
-        description="Promote approved users to admin or keep them as standard users."
-        title="Approved member roles"
-      >
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/40">
-                <TableHead className="min-w-[12rem] px-4 py-3">User</TableHead>
-                <TableHead className="min-w-[13rem] px-4 py-3">Email</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Team</TableHead>
-                <TableHead className="min-w-[8rem] px-4 py-3">Status</TableHead>
-                <TableHead className="min-w-[9rem] px-4 py-3">Role</TableHead>
-                <TableHead className="min-w-[5rem] px-4 py-3 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {approvedMembers.length === 0 ? (
-                <EmptyTableRow colSpan={6} message="No approved non-admin users are available." />
-              ) : (
-                approvedMembers.map((account) => (
-                  <TableRow key={account.userId}>
-                    <TableCell className="px-4 py-4 align-middle font-medium">
-                      {account.displayName}
+                return (
+                  <TableRow key={user.userId}>
+                    <TableCell className="px-4 py-4 align-middle">
+                      <div className="font-medium">{user.displayName}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        {roleAbilityCopy(user.role)}
+                      </div>
                     </TableCell>
                     <TableCell className="px-4 py-4 align-middle text-muted-foreground">
-                      {account.email}
+                      {user.email}
                     </TableCell>
-                    <TableCell className="px-4 py-4 align-middle">{account.team}</TableCell>
-                    <TableCell className="px-4 py-4 align-middle">
-                      <StatusBadge status={account.accessStatus} />
+                    <TableCell className="px-4 py-4 align-middle text-muted-foreground">
+                      {formatShortDate(user.createdAt)}
                     </TableCell>
                     <TableCell className="px-4 py-4 align-middle">
-                      <RoleSelect
-                        onValueChange={(nextRole) => handleRoleChange(account.userId, nextRole)}
-                        value={account.role}
-                      />
+                      {isCentralAdmin ? (
+                        <RoleSelect
+                          disabled={rowMutationKey !== null}
+                          value={pendingRoles[user.userId] ?? defaultAssignableRole(user.role)}
+                          onValueChange={(nextRole) => setPendingRole(user.userId, nextRole)}
+                        />
+                      ) : (
+                        <RoleBadge role="user" />
+                      )}
                     </TableCell>
                     <TableCell className="px-4 py-4 align-middle">
                       <RowActions align="end">
-                        <RemoveActionButton
-                          onClick={() => handleRemove(account.userId)}
-                          title={`Remove ${account.displayName}`}
-                        />
+                        <Button
+                          disabled={rowMutationKey !== null}
+                          size="sm"
+                          type="button"
+                          onClick={() =>
+                            void runAction({
+                              action: "approve",
+                              role: isCentralAdmin
+                                ? pendingRoles[user.userId] ?? defaultAssignableRole(user.role)
+                                : "user",
+                              target: user,
+                            })
+                          }
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          disabled={rowMutationKey !== null}
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                          onClick={() =>
+                            void runAction({
+                              action: "disable",
+                              target: user,
+                            })
+                          }
+                        >
+                          Disapprove
+                        </Button>
+                        {isCentralAdmin ? (
+                          <RemoveActionButton
+                            disabled={rowMutationKey !== null}
+                            title={`Remove ${user.displayName}`}
+                            onClick={() =>
+                              void runAction({
+                                action: "delete",
+                                confirmCopy: `Remove ${user.displayName} from the system? This also deletes their auth account and related data.`,
+                                target: user,
+                              })
+                            }
+                          />
+                        ) : null}
                       </RowActions>
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </ManagementSectionCard>
-    </div>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </ManagementSectionCard>
   );
 }
 
@@ -957,16 +928,16 @@ function RoleSelect({
   value,
 }: {
   disabled?: boolean;
-  onValueChange: (value: Role) => void;
-  value: Role;
+  onValueChange: (value: AssignableRole) => void;
+  value: AssignableRole;
 }) {
   return (
     <Select
       disabled={disabled}
       value={value}
-      onValueChange={(nextValue) => onValueChange(nextValue as Role)}
+      onValueChange={(nextValue) => onValueChange(nextValue as AssignableRole)}
     >
-      <SelectTrigger className="min-w-[7.75rem] bg-background">
+      <SelectTrigger className="min-w-[8rem] bg-background">
         <SelectValue />
       </SelectTrigger>
       <SelectContent align="start">
@@ -977,15 +948,15 @@ function RoleSelect({
   );
 }
 
-function RoleBadge({ role }: { role: Role }) {
+function RoleBadge({ role }: { role: AccountRole }) {
   return (
     <Badge className={cn("rounded-full px-2.5 py-0.5", roleBadgeClassName(role))} variant="outline">
-      {role === "admin" ? "Admin" : "User"}
+      {roleLabel(role)}
     </Badge>
   );
 }
 
-function StatusBadge({ status }: { status: AccessStatus }) {
+function StatusBadge({ status }: { status: UserAccount["accessStatus"] }) {
   return (
     <Badge
       className={cn("rounded-full px-2.5 py-0.5 capitalize", statusBadgeClassName(status))}

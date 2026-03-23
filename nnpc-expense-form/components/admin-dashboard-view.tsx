@@ -26,6 +26,7 @@ import {
 } from "@/lib/admin-data";
 import { formatCurrency } from "@/lib/expense-data";
 import { SESSION_EXPIRED_MESSAGE } from "@/lib/supabase-api";
+import { type UserAccount } from "@/lib/user-account-data";
 
 type AdminMessage = {
   tone: "error" | "info";
@@ -38,9 +39,10 @@ export default function AdminDashboardView({
   initialPeriod: string;
 }) {
   return (
-    <AuthGate>
-      {({ session, logout }) => (
+    <AuthGate allowedRoles={["admin", "central_admin"]}>
+      {({ account, session, logout }) => (
         <ProtectedAdminDashboard
+          account={account}
           initialPeriod={initialPeriod}
           logout={logout}
           session={session}
@@ -51,10 +53,12 @@ export default function AdminDashboardView({
 }
 
 function ProtectedAdminDashboard({
+  account,
   initialPeriod,
   logout,
   session,
 }: {
+  account: UserAccount;
   initialPeriod: string;
   logout: () => Promise<void>;
   session: AuthSession;
@@ -127,7 +131,7 @@ function ProtectedAdminDashboard({
         <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Central Admin
+              {account.role === "central_admin" ? "Central Admin" : "Admin"}
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-[2.6rem]">
               Expenses insight

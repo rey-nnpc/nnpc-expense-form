@@ -310,6 +310,273 @@ begin
 end;
 $$;
 
+create or replace function public.require_admin_user_account(
+  p_require_central boolean default false
+)
+returns public.user_accounts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actor public.user_accounts%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  select *
+  into v_actor
+  from public.user_accounts
+  where user_id = auth.uid();
+
+  if not found then
+    raise exception 'User account not found.';
+  end if;
+
+  if v_actor.access_status <> 'approved' then
+    raise exception 'Approved access required.';
+  end if;
+
+  if p_require_central then
+    if v_actor.role <> 'central_admin' then
+      raise exception 'Central admin access required.';
+    end if;
+  elsif v_actor.role not in ('admin', 'central_admin') then
+    raise exception 'Admin access required.';
+  end if;
+
+  return v_actor;
+end;
+$$;
+
+create or replace function public.get_admin_user_management()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actor public.user_accounts%rowtype;
+  v_result jsonb;
+begin
+  v_actor := public.require_admin_user_account(false);
+
+  select jsonb_build_object(
+    'totals', jsonb_build_object(
+      'pendingUsers', count(*) filter (where user_accounts.access_status = 'pending'),
+      'approvedUsers', count(*) filter (where user_accounts.access_status = 'approved'),
+      'disabledUsers', count(*) filter (where user_accounts.access_status = 'disabled'),
+      'elevatedUsers',
+        count(*) filter (
+          where user_accounts.access_status = 'approved'
+            and user_accounts.role in ('admin', 'central_admin')
+        )
+    ),
+    'users',
+      coalesce(
+        jsonb_agg(
+          jsonb_build_object(
+            'userId', user_accounts.user_id,
+            'displayName', user_accounts.display_name,
+            'email', coalesce(nullif(trim(user_accounts.email), ''), 'No email'),
+            'role', user_accounts.role,
+            'accessStatus', user_accounts.access_status,
+            'createdAt', user_accounts.created_at,
+            'updatedAt', user_accounts.updated_at,
+            'approvedAt', user_accounts.approved_at,
+            'approvedBy', user_accounts.approved_by,
+            'disabledAt', user_accounts.disabled_at,
+            'disabledBy', user_accounts.disabled_by
+          )
+          order by
+            case user_accounts.access_status
+              when 'pending' then 1
+              when 'approved' then 2
+              else 3
+            end,
+            case
+              when user_accounts.access_status = 'pending' then user_accounts.created_at
+              when user_accounts.access_status = 'disabled' then coalesce(user_accounts.disabled_at, user_accounts.updated_at)
+              else coalesce(user_accounts.approved_at, user_accounts.updated_at)
+            end desc,
+            user_accounts.display_name asc
+        ),
+        '[]'::jsonb
+      )
+  )
+  into v_result
+  from public.user_accounts;
+
+  return coalesce(
+    v_result,
+    jsonb_build_object(
+      'totals', jsonb_build_object(
+        'pendingUsers', 0,
+        'approvedUsers', 0,
+        'disabledUsers', 0,
+        'elevatedUsers', 0
+      ),
+      'users', '[]'::jsonb
+    )
+  );
+end;
+$$;
+
+create or replace function public.admin_manage_user_account(
+  p_target_user_id uuid,
+  p_action text,
+  p_role text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_actor public.user_accounts%rowtype;
+  v_target public.user_accounts%rowtype;
+  v_action text := lower(trim(coalesce(p_action, '')));
+  v_requested_role text := nullif(lower(trim(coalesce(p_role, ''))), '');
+  v_now timestamptz := timezone('utc', now());
+begin
+  v_actor := public.require_admin_user_account(false);
+
+  if p_target_user_id is null then
+    raise exception 'Target user is required.';
+  end if;
+
+  if v_action not in ('approve', 'delete', 'disable', 'set_role') then
+    raise exception 'Unsupported action.';
+  end if;
+
+  select *
+  into v_target
+  from public.user_accounts
+  where user_id = p_target_user_id;
+
+  if not found then
+    raise exception 'Target user account not found.';
+  end if;
+
+  if v_action in ('delete', 'disable', 'set_role') and v_target.user_id = v_actor.user_id then
+    raise exception 'You cannot modify your own access here.';
+  end if;
+
+  if v_target.role = 'central_admin' then
+    if v_actor.role <> 'central_admin' then
+      raise exception 'Central admin access required.';
+    end if;
+
+    if v_action = 'approve' then
+      update public.user_accounts
+      set
+        access_status = 'approved',
+        approved_at = v_now,
+        approved_by = auth.uid(),
+        disabled_at = null,
+        disabled_by = null
+      where user_id = p_target_user_id
+      returning *
+      into v_target;
+
+      return jsonb_build_object(
+        'action', v_action,
+        'userId', v_target.user_id
+      );
+    end if;
+
+    raise exception 'Central admin accounts must be changed directly in the database.';
+  end if;
+
+  if v_actor.role = 'admin' then
+    if v_action not in ('approve', 'disable') then
+      raise exception 'Only central admins can change roles or remove users.';
+    end if;
+
+    if v_target.role <> 'user' then
+      raise exception 'Only central admins can manage admin roles.';
+    end if;
+  end if;
+
+  case v_action
+    when 'approve' then
+      if v_actor.role = 'admin' then
+        v_requested_role := 'user';
+      else
+        v_requested_role := coalesce(v_requested_role, case when v_target.role = 'admin' then 'admin' else 'user' end);
+      end if;
+
+      if v_requested_role not in ('user', 'admin') then
+        raise exception 'Approved role must be user or admin.';
+      end if;
+
+      update public.user_accounts
+      set
+        role = v_requested_role,
+        access_status = 'approved',
+        approved_at = v_now,
+        approved_by = auth.uid(),
+        disabled_at = null,
+        disabled_by = null
+      where user_id = p_target_user_id
+      returning *
+      into v_target;
+
+    when 'disable' then
+      update public.user_accounts
+      set
+        access_status = 'disabled',
+        disabled_at = v_now,
+        disabled_by = auth.uid()
+      where user_id = p_target_user_id
+      returning *
+      into v_target;
+
+    when 'set_role' then
+      if v_actor.role <> 'central_admin' then
+        raise exception 'Central admin access required.';
+      end if;
+
+      if v_target.access_status <> 'approved' then
+        raise exception 'Only approved users can have roles changed.';
+      end if;
+
+      if v_requested_role not in ('user', 'admin') then
+        raise exception 'Role must be user or admin.';
+      end if;
+
+      update public.user_accounts
+      set role = v_requested_role
+      where user_id = p_target_user_id
+      returning *
+      into v_target;
+
+    when 'delete' then
+      if v_actor.role <> 'central_admin' then
+        raise exception 'Central admin access required.';
+      end if;
+
+      delete from auth.users
+      where id = p_target_user_id;
+
+      if not found then
+        raise exception 'Target auth user could not be removed.';
+      end if;
+
+      return jsonb_build_object(
+        'action', v_action,
+        'userId', p_target_user_id
+      );
+  end case;
+
+  return jsonb_build_object(
+    'action', v_action,
+    'userId', v_target.user_id
+  );
+end;
+$$;
+
 create or replace function public.get_admin_expense_dashboard(
   p_period text default null
 )
@@ -319,6 +586,7 @@ security definer
 set search_path = public
 as $$
 declare
+  v_actor public.user_accounts%rowtype;
   v_selected_period text := coalesce(
     nullif(trim(p_period), ''),
     to_char(timezone('Asia/Bangkok', now()), 'YYYY-MM')
@@ -327,9 +595,7 @@ declare
   v_selected_month integer;
   v_result jsonb;
 begin
-  if auth.uid() is null then
-    raise exception 'Not authenticated';
-  end if;
+  v_actor := public.require_admin_user_account(false);
 
   if v_selected_period !~ '^\d{4}-\d{2}$' then
     v_selected_period := to_char(timezone('Asia/Bangkok', now()), 'YYYY-MM');
@@ -342,15 +608,6 @@ begin
     v_selected_period := to_char(timezone('Asia/Bangkok', now()), 'YYYY-MM');
     v_selected_year := substring(v_selected_period from 1 for 4)::integer;
     v_selected_month := substring(v_selected_period from 6 for 2)::integer;
-  end if;
-
-  if not exists (
-    select 1
-    from public.user_accounts
-    where user_id = auth.uid()
-      and role = 'admin'
-  ) then
-    raise exception 'Admin access required.';
   end if;
 
   with yearly_reports as (
@@ -468,8 +725,15 @@ create table if not exists public.user_accounts (
   email text,
   display_name text not null check (length(trim(display_name)) > 0),
   role text not null default 'user' check (
-    role in ('user', 'admin')
+    role in ('user', 'admin', 'central_admin')
   ),
+  access_status text not null default 'pending' check (
+    access_status in ('pending', 'approved', 'disabled')
+  ),
+  approved_at timestamptz,
+  approved_by uuid references auth.users (id) on delete set null,
+  disabled_at timestamptz,
+  disabled_by uuid references auth.users (id) on delete set null,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
@@ -559,6 +823,12 @@ create index if not exists user_companies_user_created_idx
 create index if not exists user_accounts_role_idx
   on public.user_accounts (role);
 
+create index if not exists user_accounts_access_status_idx
+  on public.user_accounts (access_status);
+
+create index if not exists user_accounts_access_status_role_idx
+  on public.user_accounts (access_status, role);
+
 create index if not exists expense_reports_user_date_idx
   on public.expense_reports (user_id, expense_date desc);
 
@@ -598,7 +868,9 @@ execute function public.sync_user_account();
 insert into public.user_accounts (
   user_id,
   email,
-  display_name
+  display_name,
+  access_status,
+  approved_at
 )
 select
   users.id,
@@ -606,12 +878,16 @@ select
   public.derive_user_account_display_name(
     users.email,
     coalesce(users.raw_user_meta_data, '{}'::jsonb)
-  )
+  ),
+  'approved',
+  timezone('utc', now())
 from auth.users as users
 on conflict (user_id) do update
 set
   email = excluded.email,
   display_name = excluded.display_name,
+  access_status = coalesce(public.user_accounts.access_status, excluded.access_status),
+  approved_at = coalesce(public.user_accounts.approved_at, excluded.approved_at),
   updated_at = timezone('utc', now());
 
 drop trigger if exists set_user_companies_updated_at on public.user_companies;
@@ -891,7 +1167,7 @@ comment on table public.profiles is
   'Authenticated user profile metadata for reimbursement exports.';
 
 comment on table public.user_accounts is
-  'Application-facing account metadata and lightweight role assignments synced from auth.users.';
+  'Application-facing account metadata, approval state, and lightweight role assignments synced from auth.users.';
 
 comment on table public.user_companies is
   'Reusable company identities for export headers. Logos can be stored in Supabase Storage or preserved as legacy data URLs.';
@@ -908,8 +1184,22 @@ comment on table public.expense_receipts is
 comment on column public.expense_receipts.object_path is
   'Recommended path: <user_id>/expense-receipts/<expense_date>/expense-<line>/<file_name>.';
 
-comment on function public.get_admin_expense_dashboard(text) is
-  'Authenticated admin-only dashboard aggregate for cross-user expense reporting.';
+comment on function public.require_admin_user_account(boolean) is
+  'Internal helper that enforces approved admin or central-admin access before protected admin RPCs run.';
 
+comment on function public.get_admin_user_management() is
+  'Approved admin-only account management payload for management and allowlist workflows.';
+
+comment on function public.admin_manage_user_account(uuid, text, text) is
+  'Approved admin mutation RPC for approving, disabling, deleting, and changing user roles.';
+
+comment on function public.get_admin_expense_dashboard(text) is
+  'Authenticated admin or central-admin dashboard aggregate for cross-user expense reporting.';
+
+revoke all on function public.require_admin_user_account(boolean) from public;
+revoke all on function public.get_admin_user_management() from public;
+revoke all on function public.admin_manage_user_account(uuid, text, text) from public;
 revoke all on function public.get_admin_expense_dashboard(text) from public;
+grant execute on function public.get_admin_user_management() to authenticated;
+grant execute on function public.admin_manage_user_account(uuid, text, text) to authenticated;
 grant execute on function public.get_admin_expense_dashboard(text) to authenticated;

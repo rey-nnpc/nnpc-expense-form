@@ -1,5 +1,5 @@
-import AdminControlCenterView from "@/components/admin-control-center-view";
+import { redirect } from "next/navigation";
 
 export default function AdminAdminsPage() {
-  return <AdminControlCenterView section="admin-management" />;
+  redirect("/admin/users");
 }
