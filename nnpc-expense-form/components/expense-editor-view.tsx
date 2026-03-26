@@ -1487,50 +1487,60 @@ function ProtectedExpenseEditor({
     hasLoadedDocumentRef.current = true;
   });
 
-  useEffect(() => {
-    let isActive = true;
-
-    const loadDocument = async () => {
-      const cachedCompanies = readCompaniesCache(cacheUserKey);
-      const cachedExpenseDay = readExpenseDayCache(cacheUserKey, expenseDate);
+  const loadDocument = useEffectEvent(
+    async (
+      nextCacheUserKey: string,
+      nextExpenseDate: string,
+      isActive: () => boolean,
+    ) => {
+      const cachedCompanies = readCompaniesCache(nextCacheUserKey);
+      const cachedExpenseDay = readExpenseDayCache(nextCacheUserKey, nextExpenseDate);
       const [nextCompanies, existingReport] = await Promise.all([
         cachedCompanies
           ? Promise.resolve(cachedCompanies)
           : listUserCompanies(session.accessToken),
         cachedExpenseDay
           ? Promise.resolve(cachedExpenseDay)
-          : getExpenseDay(session.accessToken, expenseDate),
+          : getExpenseDay(session.accessToken, nextExpenseDate),
       ]);
 
-      if (!isActive) {
+      if (!isActive()) {
         return;
       }
 
       if (!cachedCompanies) {
-        writeCompaniesCache(cacheUserKey, nextCompanies);
+        writeCompaniesCache(nextCacheUserKey, nextCompanies);
       }
 
       if (existingReport && !cachedExpenseDay) {
-        writeExpenseDayCache(cacheUserKey, expenseDate, existingReport);
+        writeExpenseDayCache(nextCacheUserKey, nextExpenseDate, existingReport);
       }
 
       applyLoadedDocument(existingReport, nextCompanies);
-    };
+    },
+  );
 
-    void loadDocument()
+  const handleLoadDocumentError = useEffectEvent((error: unknown) => {
+    if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+      void logout();
+      return;
+    }
+
+    setDocumentError(getFriendlyEditorError(error, "load"));
+  });
+
+  useEffect(() => {
+    let isActive = true;
+
+    // Keep the editor state stable during auth/account refreshes. Re-load only when the
+    // actual document identity changes, and use the latest session inside the effect event.
+    void loadDocument(cacheUserKey, expenseDate, () => isActive)
       .catch((error: unknown) => {
         if (!isActive) {
           return;
         }
 
-        if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
-          void logout();
-          return;
-        }
-
-        setDocumentError(
-          getFriendlyEditorError(error, "load"),
-        );
+        handleLoadDocumentError(error);
       })
       .finally(() => {
         if (isActive) {
@@ -1541,7 +1551,7 @@ function ProtectedExpenseEditor({
     return () => {
       isActive = false;
     };
-  }, [cacheUserKey, defaultEmployeeName, expenseDate, logout, session.accessToken]);
+  }, [cacheUserKey, expenseDate]);
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
   const shouldUseLoadedCompanySnapshot =
