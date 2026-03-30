@@ -18,6 +18,8 @@ import {
   ChevronUp,
   CloudCheck,
   CloudUpload,
+  Download,
+  Eye,
   FileText,
   Globe2,
   Hash,
@@ -74,9 +76,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { TopRouteTabs } from "@/components/top-route-tabs";
 import { type UserAccount } from "@/lib/user-account-data";
 import {
+  clearExpenseDraftCache,
+  readExpenseDraftCache,
   readCompaniesCache,
   readExpenseDayCache,
+  type ExpenseDraftSnapshot,
   upsertExpenseSummaryCache,
+  writeExpenseDraftCache,
   writeCompaniesCache,
   writeExpenseDayCache,
 } from "@/lib/browser-cache";
@@ -239,14 +245,32 @@ type ExportFileHandle = {
   }>;
 };
 
-type ExportSaveTarget =
+type ExportDeliveryTarget =
   | {
+      file: File;
+      kind: "share";
+    }
+  | {
+      fileName: string;
       kind: "file-picker";
-      handle: ExportFileHandle;
+    }
+  | {
+      fileName: string;
+      kind: "open";
     }
   | {
       fileName: string;
       kind: "download";
+    };
+
+type ExportDeliveryResult =
+  | {
+      kind: "cancelled";
+      message: null;
+    }
+  | {
+      kind: "downloaded" | "opened" | "saved" | "shared";
+      message: string;
     };
 
 type ExportAssetPreparationResult = {
@@ -274,6 +298,14 @@ type PendingSaveSnapshot = {
   companyLogoBucketName: string;
   companyLogoObjectPath: string;
   companyName: string;
+  employeeName: string;
+  exportLanguage: ExportLanguage;
+  note: string;
+  rows: ExpenseRow[];
+};
+
+type HydratedExpenseDraft = {
+  companyId: string;
   employeeName: string;
   exportLanguage: ExportLanguage;
   note: string;
@@ -337,6 +369,62 @@ function readFileAsDataUrl(file: File) {
 
     reader.readAsDataURL(file);
   });
+}
+
+function isDataUrl(url: string) {
+  return url.startsWith("data:");
+}
+
+function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string | null) {
+  const [header, encodedContent] = dataUrl.split(",", 2);
+
+  if (!header || !encodedContent) {
+    throw new Error("Draft receipt data URL was malformed.");
+  }
+
+  const resolvedMimeType =
+    mimeType ?? /data:([^;]+)/.exec(header)?.[1] ?? "application/octet-stream";
+  const binaryString = window.atob(encodedContent);
+  const bytes = Uint8Array.from(binaryString, (character) => character.charCodeAt(0));
+
+  return new File([bytes], fileName, { type: resolvedMimeType });
+}
+
+function hydrateDraftRows(rows: ExpenseDraftSnapshot["rows"]) {
+  return rows.map(
+    (row) =>
+      ({
+        ...row,
+        receipts: row.receipts.map((receipt) => ({
+          ...receipt,
+          file:
+            !receipt.objectPath && isDataUrl(receipt.previewUrl)
+              ? dataUrlToFile(receipt.previewUrl, receipt.name, receipt.mimeType)
+              : undefined,
+        })),
+      }) satisfies ExpenseRow,
+  );
+}
+
+function serializeRowsForDraft(rows: ExpenseRow[]): ExpenseDraftSnapshot["rows"] {
+  return rows.map((row) => ({
+    amount: row.amount,
+    id: row.id,
+    isExpanded: row.isExpanded,
+    isReceiptPreviewOpen: row.isReceiptPreviewOpen,
+    receipts: row.receipts.map((receipt) => ({
+      bucketName: receipt.bucketName,
+      fileSizeBytes: receipt.fileSizeBytes ?? null,
+      id: receipt.id,
+      mimeType: receipt.mimeType ?? null,
+      name: receipt.name,
+      objectPath: receipt.objectPath,
+      previewUrl: receipt.previewUrl,
+      sizeLabel: receipt.sizeLabel,
+    })),
+    remark: row.remark,
+    typeId: row.typeId,
+  }));
 }
 
 function getFriendlyEditorError(
@@ -1257,7 +1345,7 @@ async function createExportPdfBlob(source: ExportPdfSource) {
   return exportBlob;
 }
 
-async function requestExportSaveTarget(fileName: string) {
+function getExportFilePicker() {
   const saveWindow = window as Window & {
     showSaveFilePicker?: (options?: {
       suggestedName?: string;
@@ -1268,65 +1356,191 @@ async function requestExportSaveTarget(fileName: string) {
     }) => Promise<ExportFileHandle>;
   };
 
-  const canUseFilePicker = Boolean(saveWindow.showSaveFilePicker && window.isSecureContext);
-
-  if (canUseFilePicker) {
-    const showSaveFilePicker = saveWindow.showSaveFilePicker;
-
-    if (!showSaveFilePicker) {
-      throw new Error("showSaveFilePicker became unavailable before export save started.");
-    }
-
-    try {
-      const fileHandle = await showSaveFilePicker({
-        suggestedName: fileName,
-        types: [
-          {
-            accept: {
-              "application/pdf": [".pdf"],
-            },
-            description: "PDF document",
-          },
-        ],
-      });
-
-      return {
-        handle: fileHandle,
-        kind: "file-picker",
-      } satisfies ExportSaveTarget;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        return null;
-      }
-
-      throw error;
-    }
-  }
-
-  return {
-    fileName,
-    kind: "download",
-  } satisfies ExportSaveTarget;
+  return window.isSecureContext ? saveWindow.showSaveFilePicker ?? null : null;
 }
 
-async function saveExportPdfBlob(blob: Blob, saveTarget: ExportSaveTarget) {
-  if (saveTarget.kind === "file-picker") {
-    const writable = await saveTarget.handle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    return true;
+async function requestExportFileHandle(fileName: string) {
+  const showSaveFilePicker = getExportFilePicker();
+
+  if (!showSaveFilePicker) {
+    return null;
   }
 
+  try {
+    return await showSaveFilePicker({
+      suggestedName: fileName,
+      types: [
+        {
+          accept: {
+            "application/pdf": [".pdf"],
+          },
+          description: "PDF document",
+        },
+      ],
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function buildExportDeliveryTargets(
+  blob: Blob,
+  fileName: string,
+  preferShare: boolean,
+) {
+  const targets: ExportDeliveryTarget[] = [];
+  const shareNavigator = navigator as Navigator & {
+    canShare?: (data?: ShareData) => boolean;
+    share?: (data?: ShareData) => Promise<void>;
+  };
+  const pdfFile =
+    typeof File === "function"
+      ? new File([blob], fileName, { type: "application/pdf" })
+      : null;
+
+  if (
+    preferShare &&
+    pdfFile &&
+    typeof shareNavigator.share === "function" &&
+    shareNavigator.canShare?.({ files: [pdfFile] })
+  ) {
+    targets.push({
+      file: pdfFile,
+      kind: "share",
+    });
+  }
+
+  if (getExportFilePicker()) {
+    targets.push({
+      fileName,
+      kind: "file-picker",
+    });
+  }
+
+  if (preferShare) {
+    targets.push({
+      fileName,
+      kind: "open",
+    });
+  }
+
+  targets.push({
+    fileName,
+    kind: "download",
+  });
+
+  return targets;
+}
+
+function triggerPdfDownload(blob: Blob, fileName: string, message: string) {
   const blobUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.style.display = "none";
   anchor.href = blobUrl;
-  anchor.download = saveTarget.fileName;
+  anchor.download = fileName;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-  return true;
+
+  return {
+    kind: "downloaded",
+    message,
+  } satisfies ExportDeliveryResult;
+}
+
+async function deliverExportPdf({
+  blob,
+  fileName,
+  preferShare,
+}: {
+  blob: Blob;
+  fileName: string;
+  preferShare: boolean;
+}) {
+  const shareNavigator = navigator as Navigator & {
+    share?: (data?: ShareData) => Promise<void>;
+  };
+  const deliveryTargets = buildExportDeliveryTargets(blob, fileName, preferShare);
+  let lastError: unknown = null;
+
+  for (const target of deliveryTargets) {
+    try {
+      if (target.kind === "share") {
+        if (typeof shareNavigator.share !== "function") {
+          continue;
+        }
+
+        await shareNavigator.share({
+          files: [target.file],
+          title: target.file.name,
+        });
+
+        return {
+          kind: "shared",
+          message: "Share sheet opened.",
+        } satisfies ExportDeliveryResult;
+      }
+
+      if (target.kind === "file-picker") {
+        const fileHandle = await requestExportFileHandle(target.fileName);
+
+        if (!fileHandle) {
+          return {
+            kind: "cancelled",
+            message: null,
+          } satisfies ExportDeliveryResult;
+        }
+
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+
+        return {
+          kind: "saved",
+          message: "PDF saved to your device.",
+        } satisfies ExportDeliveryResult;
+      }
+
+      if (target.kind === "open") {
+        const blobUrl = URL.createObjectURL(blob);
+        const exportWindow = window.open(blobUrl, "_blank");
+
+        if (!exportWindow) {
+          URL.revokeObjectURL(blobUrl);
+          return triggerPdfDownload(
+            blob,
+            target.fileName,
+            "PDF download started because your browser blocked opening a new tab.",
+          );
+        }
+
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+
+        return {
+          kind: "opened",
+          message: "PDF opened in a new tab.",
+        } satisfies ExportDeliveryResult;
+      }
+
+      return triggerPdfDownload(blob, target.fileName, "PDF download started.");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return {
+          kind: "cancelled",
+          message: null,
+        } satisfies ExportDeliveryResult;
+      }
+
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error("No supported PDF delivery path was available.");
 }
 
 function DesktopExportPreviewPageCard({
@@ -1433,9 +1647,11 @@ function ProtectedExpenseEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [lastPrintedAt, setLastPrintedAt] = useState<string | null>(null);
+  const [exportFeedbackMessage, setExportFeedbackMessage] = useState<string | null>(null);
   const [isPreparingPrint, setIsPreparingPrint] = useState(false);
   const [isExportPreviewOpen, setIsExportPreviewOpen] = useState(false);
   const [isSavingPdf, setIsSavingPdf] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
   const [isMobileExportPreview, setIsMobileExportPreview] = useState(false);
   const [exportPreviewScale, setExportPreviewScale] = useState(1);
   const [exportAssetUrlMap, setExportAssetUrlMap] = useState<Record<string, string>>({});
@@ -1445,19 +1661,23 @@ function ProtectedExpenseEditor({
   const isPersistingRef = useRef(false);
   const activeSavePromiseRef = useRef<Promise<string | null> | null>(null);
   const saveTimerRef = useRef<number | null>(null);
+  const draftTimerRef = useRef<number | null>(null);
   const skipNextAutosaveRef = useRef(true);
+  const skipNextDraftWriteRef = useRef(true);
   const hasLoadedDocumentRef = useRef(false);
+  const latestDraftSnapshotRef = useRef<ExpenseDraftSnapshot | null>(null);
   const exportAssetObjectUrlsRef = useRef<string[]>([]);
   const exportPreviewViewportRef = useRef<HTMLDivElement | null>(null);
 
   const applyLoadedDocument = useEffectEvent((
     existingReport: ExpenseDayDocument | null,
     nextCompanies: CompanyRecord[],
+    hydratedDraft: HydratedExpenseDraft | null,
   ) => {
     setCompanies(nextCompanies);
     setDocumentError(null);
 
-    if (!existingReport) {
+    if (!existingReport && !hydratedDraft) {
       setEmployeeName(defaultEmployeeName);
       setSelectedCompanyId("");
       setLoadedCompanyId("");
@@ -1470,20 +1690,27 @@ function ProtectedExpenseEditor({
       setNote("");
       setRows([]);
     } else {
-      setEmployeeName(existingReport.employeeName || defaultEmployeeName);
-      setSelectedCompanyId(existingReport.companyId);
-      setLoadedCompanyId(existingReport.companyId);
-      setLoadedCompanyName(existingReport.companyName);
-      setLoadedCompanyLogoBucketName(existingReport.companyLogoBucketName);
-      setLoadedCompanyLogoObjectPath(existingReport.companyLogoObjectPath);
-      setLoadedCompanyLogoUrl(existingReport.companyLogoUrl);
-      setExportLanguage(existingReport.exportLanguage);
-      setExpenseCode(existingReport.expenseCode);
-      setNote(existingReport.note);
-      setRows(buildRowsFromLoadedReport(existingReport.rows));
+      setEmployeeName(
+        hydratedDraft?.employeeName ?? existingReport?.employeeName ?? defaultEmployeeName,
+      );
+      setSelectedCompanyId(hydratedDraft?.companyId ?? existingReport?.companyId ?? "");
+      setLoadedCompanyId(existingReport?.companyId ?? "");
+      setLoadedCompanyName(existingReport?.companyName ?? "");
+      setLoadedCompanyLogoBucketName(existingReport?.companyLogoBucketName ?? "");
+      setLoadedCompanyLogoObjectPath(existingReport?.companyLogoObjectPath ?? "");
+      setLoadedCompanyLogoUrl(existingReport?.companyLogoUrl ?? "");
+      setExportLanguage(hydratedDraft?.exportLanguage ?? existingReport?.exportLanguage ?? "en");
+      setExpenseCode(existingReport?.expenseCode ?? "");
+      setNote(hydratedDraft?.note ?? existingReport?.note ?? "");
+      setRows(
+        hydratedDraft?.rows ??
+          (existingReport ? buildRowsFromLoadedReport(existingReport.rows) : []),
+      );
     }
 
     skipNextAutosaveRef.current = true;
+    skipNextDraftWriteRef.current = true;
+    latestDraftSnapshotRef.current = null;
     hasLoadedDocumentRef.current = true;
   });
 
@@ -1495,6 +1722,7 @@ function ProtectedExpenseEditor({
     ) => {
       const cachedCompanies = readCompaniesCache(nextCacheUserKey);
       const cachedExpenseDay = readExpenseDayCache(nextCacheUserKey, nextExpenseDate);
+      const cachedDraft = readExpenseDraftCache(nextCacheUserKey, nextExpenseDate);
       const [nextCompanies, existingReport] = await Promise.all([
         cachedCompanies
           ? Promise.resolve(cachedCompanies)
@@ -1516,7 +1744,23 @@ function ProtectedExpenseEditor({
         writeExpenseDayCache(nextCacheUserKey, nextExpenseDate, existingReport);
       }
 
-      applyLoadedDocument(existingReport, nextCompanies);
+      let hydratedDraft: HydratedExpenseDraft | null = null;
+
+      if (cachedDraft) {
+        try {
+          hydratedDraft = {
+            companyId: cachedDraft.companyId,
+            employeeName: cachedDraft.employeeName,
+            exportLanguage: cachedDraft.exportLanguage,
+            note: cachedDraft.note,
+            rows: hydrateDraftRows(cachedDraft.rows),
+          };
+        } catch {
+          clearExpenseDraftCache(nextCacheUserKey, nextExpenseDate);
+        }
+      }
+
+      applyLoadedDocument(existingReport, nextCompanies, hydratedDraft);
     },
   );
 
@@ -1571,6 +1815,18 @@ function ProtectedExpenseEditor({
     (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoObjectPath : "");
   const selectedCompanyLogoUrl =
     selectedCompany?.logoUrl ?? (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoUrl : "");
+
+  const buildPendingSaveSnapshot = () =>
+    ({
+      companyId: selectedCompanyId,
+      companyLogoBucketName: selectedCompanyLogoBucketName,
+      companyLogoObjectPath: selectedCompanyLogoObjectPath,
+      companyName: selectedCompanyName,
+      employeeName,
+      exportLanguage,
+      note,
+      rows,
+    }) satisfies PendingSaveSnapshot;
 
   const persistSnapshot = async (nextSnapshot: PendingSaveSnapshot) => {
     isPersistingRef.current = true;
@@ -1633,8 +1889,19 @@ function ProtectedExpenseEditor({
         totalAmount: persistedRows.reduce((sum, row) => sum + parseAmount(row.amount), 0),
       });
 
+      if (!pendingSaveRef.current) {
+        if (draftTimerRef.current) {
+          window.clearTimeout(draftTimerRef.current);
+          draftTimerRef.current = null;
+        }
+
+        latestDraftSnapshotRef.current = null;
+        clearExpenseDraftCache(cacheUserKey, expenseDate);
+      }
+
       if (saveResult.didUpload) {
         skipNextAutosaveRef.current = true;
+        skipNextDraftWriteRef.current = true;
         setRows(saveResult.rows);
       }
 
@@ -1672,7 +1939,7 @@ function ProtectedExpenseEditor({
     return nextSavePromise;
   };
 
-  const flushPendingSave = useEffectEvent(async () => {
+  const flushPendingSaveNow = async () => {
     if (isPersistingRef.current) {
       return activeSavePromiseRef.current;
     }
@@ -1685,40 +1952,47 @@ function ProtectedExpenseEditor({
 
     pendingSaveRef.current = null;
     return startSave(nextSnapshot);
-  });
+  };
 
-  const ensurePersistedExpenseCode = async () => {
-    const currentExpenseCode = expenseCode.trim();
+  const flushPendingSave = useEffectEvent(async () => flushPendingSaveNow());
 
-    if (currentExpenseCode) {
-      return currentExpenseCode;
+  const flushDraftToCache = useEffectEvent((draftSnapshot?: ExpenseDraftSnapshot | null) => {
+    const nextDraftSnapshot = draftSnapshot ?? latestDraftSnapshotRef.current;
+
+    if (draftTimerRef.current) {
+      window.clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
     }
 
+    if (!nextDraftSnapshot) {
+      return;
+    }
+
+    latestDraftSnapshotRef.current = nextDraftSnapshot;
+    writeExpenseDraftCache(cacheUserKey, expenseDate, nextDraftSnapshot);
+  });
+
+  const ensureDocumentPersistedForExport = async () => {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
 
-    if (isPersistingRef.current) {
-      const inFlightExpenseCode = await activeSavePromiseRef.current;
+    let resolvedExpenseCode = expenseCode.trim();
 
-      if (inFlightExpenseCode?.trim()) {
-        return inFlightExpenseCode;
+    while (pendingSaveRef.current || isPersistingRef.current) {
+      const nextExpenseCode = await flushPendingSaveNow();
+
+      if (nextExpenseCode?.trim()) {
+        resolvedExpenseCode = nextExpenseCode;
       }
     }
 
-    pendingSaveRef.current = null;
+    if (resolvedExpenseCode) {
+      return resolvedExpenseCode;
+    }
 
-    const persistedExpenseCode = await startSave({
-      companyId: selectedCompanyId,
-      companyLogoBucketName: selectedCompanyLogoBucketName,
-      companyLogoObjectPath: selectedCompanyLogoObjectPath,
-      companyName: selectedCompanyName,
-      employeeName,
-      exportLanguage,
-      note,
-      rows,
-    });
+    const persistedExpenseCode = await startSave(buildPendingSaveSnapshot());
 
     if (persistedExpenseCode?.trim()) {
       return persistedExpenseCode;
@@ -1772,6 +2046,96 @@ function ProtectedExpenseEditor({
     selectedCompanyLogoObjectPath,
     selectedCompanyName,
   ]);
+
+  useEffect(() => {
+    if (!hasLoadedDocumentRef.current) {
+      return;
+    }
+
+    if (skipNextDraftWriteRef.current) {
+      skipNextDraftWriteRef.current = false;
+      return;
+    }
+
+    const nextDraftSnapshot = {
+      companyId: selectedCompanyId,
+      employeeName,
+      exportLanguage,
+      note,
+      rows: serializeRowsForDraft(rows),
+    } satisfies ExpenseDraftSnapshot;
+    latestDraftSnapshotRef.current = nextDraftSnapshot;
+
+    if (draftTimerRef.current) {
+      window.clearTimeout(draftTimerRef.current);
+    }
+
+    draftTimerRef.current = window.setTimeout(() => {
+      flushDraftToCache(nextDraftSnapshot);
+    }, 250);
+
+    return () => {
+      if (draftTimerRef.current) {
+        window.clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = null;
+      }
+    };
+  }, [employeeName, exportLanguage, note, rows, selectedCompanyId]);
+
+  const flushDraftAndPendingWork = useEffectEvent(() => {
+    flushDraftToCache();
+
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+
+    if (pendingSaveRef.current || isPersistingRef.current) {
+      void flushPendingSave();
+    }
+  });
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      flushDraftAndPendingWork();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushDraftAndPendingWork();
+      }
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const syncMobileLayout = () => {
+      setIsMobileLayout(mediaQuery.matches);
+    };
+
+    syncMobileLayout();
+
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", syncMobileLayout);
+
+      return () => {
+        mediaQuery.removeEventListener("change", syncMobileLayout);
+      };
+    }
+
+    mediaQuery.addListener(syncMobileLayout);
+
+    return () => {
+      mediaQuery.removeListener(syncMobileLayout);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isExportPreviewOpen || !exportPreviewViewportRef.current) {
@@ -1863,10 +2227,6 @@ function ProtectedExpenseEditor({
     })),
   );
   const receiptPages = chunkEntries(printableReceipts, RECEIPTS_PER_PAGE);
-  const printableAssetUrls = [
-    selectedCompanyLogoUrl,
-    ...printableReceipts.map((entry) => entry.receipt.previewUrl),
-  ].filter(Boolean);
   const exportSelectedCompanyLogoUrl =
     exportAssetUrlMap[selectedCompanyLogoUrl] ?? selectedCompanyLogoUrl;
   const exportPreviewPages = [
@@ -1913,6 +2273,7 @@ function ProtectedExpenseEditor({
       ),
     })),
   ];
+  const isExportBusy = isPreparingPrint || isSavingPdf;
   const editorStatus = saveError
     ? {
         description: saveError,
@@ -2107,8 +2468,77 @@ function ProtectedExpenseEditor({
     setPendingRemoval(null);
   };
 
-  const handlePrint = async () => {
-    if (isPreparingPrint) {
+  const buildExportArtifacts = (nextExpenseCode: string) => {
+    const nextPopulatedRows = rows.filter(hasRowContent);
+    const nextPopulatedRowsWithLineNumbers: PrintableFormRow[] = nextPopulatedRows.map(
+      (row, index) => ({
+        lineNumber: index + 1,
+        row,
+      }),
+    );
+    const nextPrintableReceipts: PrintableReceiptEntry[] = nextPopulatedRowsWithLineNumbers.flatMap(
+      ({ lineNumber, row }) =>
+        row.receipts.map((receipt, receiptIndex) => ({
+          key: `${row.id}-${receipt.id}`,
+          label: `${EXPORT_COPY[exportLanguage].receiptLabel} - ${formatExpenseLineReferenceCode(
+            expenseDate,
+            lineNumber,
+            nextExpenseCode,
+          )}${row.receipts.length > 1 ? `.${receiptIndex + 1}` : ""}`,
+          lineNumber,
+          receipt,
+          row,
+        })),
+    );
+
+    return {
+      displayExpenseReference: formatExpenseReferenceCode(expenseDate, nextExpenseCode),
+      exportCopy: EXPORT_COPY[exportLanguage],
+      exportLanguage,
+      note,
+      printableAssetUrls: [
+        selectedCompanyLogoUrl,
+        ...nextPrintableReceipts.map((entry) => entry.receipt.previewUrl),
+      ].filter(Boolean),
+      printableEmployeeName: employeeName || defaultEmployeeName,
+      printableFormPages:
+        nextPopulatedRowsWithLineNumbers.length > 0
+          ? chunkEntries(nextPopulatedRowsWithLineNumbers, EXPORT_FORM_ROWS_PER_PAGE)
+          : [nextPopulatedRowsWithLineNumbers],
+      receiptPages: chunkEntries(nextPrintableReceipts, RECEIPTS_PER_PAGE),
+      selectedCompanyLogoUrl,
+      selectedCompanyName,
+      totalAmount: rows.reduce((sum, row) => sum + parseAmount(row.amount), 0),
+    };
+  };
+
+  const prepareExportAssets = async (assetUrls: string[]) => {
+    const preparedExportAssets = await buildExportAssetUrlMap(assetUrls);
+
+    for (const objectUrl of exportAssetObjectUrlsRef.current) {
+      URL.revokeObjectURL(objectUrl);
+    }
+
+    exportAssetObjectUrlsRef.current = preparedExportAssets.objectUrls;
+    setExportAssetUrlMap(preparedExportAssets.assetUrlMap);
+
+    const areAssetsReady = await preloadPrintableAssets(
+      Object.values(preparedExportAssets.assetUrlMap),
+    );
+
+    if (!areAssetsReady) {
+      throw new Error("Printable assets were not ready in time.");
+    }
+
+    if ("fonts" in document) {
+      await document.fonts.ready;
+    }
+
+    return preparedExportAssets.assetUrlMap;
+  };
+
+  const handlePreviewExport = async () => {
+    if (isPreparingPrint || isSavingPdf) {
       return;
     }
 
@@ -2120,32 +2550,14 @@ function ProtectedExpenseEditor({
     }
 
     setPrintError(null);
+    setExportFeedbackMessage(null);
     setIsPreparingPrint(true);
 
     try {
-      await ensurePersistedExpenseCode();
+      const resolvedExpenseCode = await ensureDocumentPersistedForExport();
+      const exportArtifacts = buildExportArtifacts(resolvedExpenseCode);
 
-      const preparedExportAssets = await buildExportAssetUrlMap(printableAssetUrls);
-
-      for (const objectUrl of exportAssetObjectUrlsRef.current) {
-        URL.revokeObjectURL(objectUrl);
-      }
-
-      exportAssetObjectUrlsRef.current = preparedExportAssets.objectUrls;
-      setExportAssetUrlMap(preparedExportAssets.assetUrlMap);
-
-      const areAssetsReady = await preloadPrintableAssets(
-        Object.values(preparedExportAssets.assetUrlMap),
-      );
-
-      if (!areAssetsReady) {
-        throw new Error("Printable assets were not ready in time.");
-      }
-
-      if ("fonts" in document) {
-        await document.fonts.ready;
-      }
-
+      await prepareExportAssets(exportArtifacts.printableAssetUrls);
       await waitForNextFrame();
       setIsExportPreviewOpen(true);
     } catch (error) {
@@ -2155,52 +2567,126 @@ function ProtectedExpenseEditor({
     }
   };
 
-  const handleConfirmExport = async () => {
-    if (isSavingPdf) {
+  const handleDirectMobileExport = async () => {
+    if (isPreparingPrint || isSavingPdf) {
+      return;
+    }
+
+    if (!canExport) {
+      setPrintError(
+        exportValidationMessage ?? "Select a company profile with a logo before exporting.",
+      );
       return;
     }
 
     setPrintError(null);
-    setIsSavingPdf(true);
-    const exportFileName = buildExportFileName(displayExpenseReference, expenseDate);
-
-    const exportedAt = new Intl.DateTimeFormat("en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date());
+    setExportFeedbackMessage(null);
+    setIsPreparingPrint(true);
 
     try {
-      const saveTarget = await requestExportSaveTarget(exportFileName);
+      const resolvedExpenseCode = await ensureDocumentPersistedForExport();
+      const exportArtifacts = buildExportArtifacts(resolvedExpenseCode);
+      const preparedAssetUrlMap = await prepareExportAssets(exportArtifacts.printableAssetUrls);
+      const exportFileName = buildExportFileName(
+        exportArtifacts.displayExpenseReference,
+        expenseDate,
+      );
+      const exportedAt = new Intl.DateTimeFormat("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date());
 
-      if (!saveTarget) {
-        return;
-      }
-
-      if ("fonts" in document) {
-        await document.fonts.ready;
-      }
+      setIsPreparingPrint(false);
+      setIsSavingPdf(true);
 
       const exportBlob = await createExportPdfBlob({
-        assetUrlMap: exportAssetUrlMap,
-        displayExpenseReference,
-        employeeName: printableEmployeeName,
+        assetUrlMap: preparedAssetUrlMap,
+        displayExpenseReference: exportArtifacts.displayExpenseReference,
+        employeeName: exportArtifacts.printableEmployeeName,
         expenseDate,
-        exportCopy,
-        exportLanguage,
-        note,
-        printableFormPages,
-        receiptPages,
-        selectedCompanyLogoUrl: exportSelectedCompanyLogoUrl,
-        selectedCompanyName,
-        totalAmount,
+        exportCopy: exportArtifacts.exportCopy,
+        exportLanguage: exportArtifacts.exportLanguage,
+        note: exportArtifacts.note,
+        printableFormPages: exportArtifacts.printableFormPages,
+        receiptPages: exportArtifacts.receiptPages,
+        selectedCompanyLogoUrl:
+          preparedAssetUrlMap[exportArtifacts.selectedCompanyLogoUrl] ??
+          exportArtifacts.selectedCompanyLogoUrl,
+        selectedCompanyName: exportArtifacts.selectedCompanyName,
+        totalAmount: exportArtifacts.totalAmount,
       });
-      const didSave = await saveExportPdfBlob(exportBlob, saveTarget);
+      const deliveryResult = await deliverExportPdf({
+        blob: exportBlob,
+        fileName: exportFileName,
+        preferShare: true,
+      });
 
-      if (!didSave) {
+      if (deliveryResult.kind === "cancelled") {
         return;
       }
 
       setLastPrintedAt(exportedAt);
+      setExportFeedbackMessage(deliveryResult.message);
+    } catch (error) {
+      setPrintError(getFriendlyEditorError(error, "print"));
+    } finally {
+      setIsPreparingPrint(false);
+      setIsSavingPdf(false);
+    }
+  };
+
+  const handleConfirmExport = async () => {
+    if (isPreparingPrint || isSavingPdf) {
+      return;
+    }
+
+    setPrintError(null);
+    setExportFeedbackMessage(null);
+    setIsSavingPdf(true);
+
+    try {
+      const resolvedExpenseCode = await ensureDocumentPersistedForExport();
+      const exportArtifacts = buildExportArtifacts(resolvedExpenseCode);
+      const exportFileName = buildExportFileName(
+        exportArtifacts.displayExpenseReference,
+        expenseDate,
+      );
+      const exportedAt = new Intl.DateTimeFormat("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date());
+      const preparedAssetUrlMap =
+        Object.keys(exportAssetUrlMap).length > 0
+          ? exportAssetUrlMap
+          : await prepareExportAssets(exportArtifacts.printableAssetUrls);
+      const exportBlob = await createExportPdfBlob({
+        assetUrlMap: preparedAssetUrlMap,
+        displayExpenseReference: exportArtifacts.displayExpenseReference,
+        employeeName: exportArtifacts.printableEmployeeName,
+        expenseDate,
+        exportCopy: exportArtifacts.exportCopy,
+        exportLanguage: exportArtifacts.exportLanguage,
+        note: exportArtifacts.note,
+        printableFormPages: exportArtifacts.printableFormPages,
+        receiptPages: exportArtifacts.receiptPages,
+        selectedCompanyLogoUrl:
+          preparedAssetUrlMap[exportArtifacts.selectedCompanyLogoUrl] ??
+          exportArtifacts.selectedCompanyLogoUrl,
+        selectedCompanyName: exportArtifacts.selectedCompanyName,
+        totalAmount: exportArtifacts.totalAmount,
+      });
+      const deliveryResult = await deliverExportPdf({
+        blob: exportBlob,
+        fileName: exportFileName,
+        preferShare: isMobileLayout,
+      });
+
+      if (deliveryResult.kind === "cancelled") {
+        return;
+      }
+
+      setLastPrintedAt(exportedAt);
+      setExportFeedbackMessage(deliveryResult.message);
       setIsExportPreviewOpen(false);
     } catch (error) {
       setPrintError(getFriendlyEditorError(error, "print"));
@@ -2295,23 +2781,65 @@ function ProtectedExpenseEditor({
 
                 <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
                   <ThemeSettingsSheet userEmail={session.userEmail} />
-                  <Button
-                    className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90 sm:w-auto"
-                    disabled={isPreparingPrint || !canExport}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      void handlePrint();
-                    }}
-                  >
-                    {isPreparingPrint ? (
-                      <LoaderCircle className="size-4 animate-spin" />
-                    ) : (
-                      <Printer className="size-4" />
-                    )}
-                    {isPreparingPrint ? "Preparing export..." : "Export PDF"}
-                  </Button>
+                  {isMobileLayout ? (
+                    <>
+                      <Button
+                        className="w-full rounded-full px-4 sm:w-auto"
+                        disabled={isExportBusy || !canExport}
+                        size="sm"
+                        type="button"
+                        onClick={() => {
+                          void handleDirectMobileExport();
+                        }}
+                      >
+                        {isExportBusy ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : (
+                          <Download className="size-4" />
+                        )}
+                        {isExportBusy
+                          ? isSavingPdf
+                            ? "Sharing / saving..."
+                            : "Preparing PDF..."
+                          : "Share / Save PDF"}
+                      </Button>
+                      <Button
+                        className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90 sm:w-auto"
+                        disabled={isExportBusy || !canExport}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          void handlePreviewExport();
+                        }}
+                      >
+                        <Eye className="size-4" />
+                        Preview PDF
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90 sm:w-auto"
+                      disabled={isExportBusy || !canExport}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        void handlePreviewExport();
+                      }}
+                    >
+                      {isExportBusy ? (
+                        <LoaderCircle className="size-4 animate-spin" />
+                      ) : (
+                        <Printer className="size-4" />
+                      )}
+                      {isExportBusy
+                        ? isSavingPdf
+                          ? "Saving PDF..."
+                          : "Preparing export..."
+                        : "Export PDF"}
+                    </Button>
+                  )}
                   <Button
                     className="w-full rounded-full border-white/10 bg-background/70 px-4 shadow-none backdrop-blur-xl hover:bg-background/90 sm:w-auto"
                     size="sm"
@@ -2820,12 +3348,18 @@ function ProtectedExpenseEditor({
                     <p className="mt-2 text-sm text-foreground">
                       {isPreparingPrint
                         ? "Preparing your receipt photos for PDF..."
+                        : isSavingPdf
+                          ? "Sending the PDF to your browser..."
                         : lastPrintedAt
                           ? `Last exported ${lastPrintedAt}`
                           : "No PDF exported yet"}
                     </p>
                     {printError ? (
                       <p className="mt-2 text-sm leading-6 text-destructive">{printError}</p>
+                    ) : exportFeedbackMessage ? (
+                      <p className="mt-2 text-sm leading-6 text-primary">
+                        {exportFeedbackMessage}
+                      </p>
                     ) : null}
                   </div>
 
@@ -2842,21 +3376,61 @@ function ProtectedExpenseEditor({
                     </div>
                   </div>
 
-                  <Button
-                    className="h-11 w-full rounded-2xl"
-                    disabled={isPreparingPrint || !canExport}
-                    type="button"
-                    onClick={() => {
-                      void handlePrint();
-                    }}
-                  >
-                    {isPreparingPrint ? (
-                      <LoaderCircle className="size-4 animate-spin" />
-                    ) : (
-                      <Printer className="size-4" />
-                    )}
-                    {isPreparingPrint ? "Preparing your export..." : "Export this day sheet"}
-                  </Button>
+                  {isMobileLayout ? (
+                    <div className="space-y-2">
+                      <Button
+                        className="h-11 w-full rounded-2xl"
+                        disabled={isExportBusy || !canExport}
+                        type="button"
+                        onClick={() => {
+                          void handleDirectMobileExport();
+                        }}
+                      >
+                        {isExportBusy ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : (
+                          <Download className="size-4" />
+                        )}
+                        {isExportBusy
+                          ? isSavingPdf
+                            ? "Sharing / saving PDF..."
+                            : "Preparing your export..."
+                          : "Share / Save PDF"}
+                      </Button>
+                      <Button
+                        className="h-11 w-full rounded-2xl"
+                        disabled={isExportBusy || !canExport}
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          void handlePreviewExport();
+                        }}
+                      >
+                        <Eye className="size-4" />
+                        Preview PDF first
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      className="h-11 w-full rounded-2xl"
+                      disabled={isExportBusy || !canExport}
+                      type="button"
+                      onClick={() => {
+                        void handlePreviewExport();
+                      }}
+                    >
+                      {isExportBusy ? (
+                        <LoaderCircle className="size-4 animate-spin" />
+                      ) : (
+                        <Printer className="size-4" />
+                      )}
+                      {isExportBusy
+                        ? isSavingPdf
+                          ? "Saving PDF..."
+                          : "Preparing your export..."
+                        : "Export this day sheet"}
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
 
@@ -2902,8 +3476,9 @@ function ProtectedExpenseEditor({
                     Export preview
                   </DialogTitle>
                   <DialogDescription className="mt-2 max-w-2xl text-sm leading-6 sm:leading-7">
-                    Review the full PDF before saving. This preview is scrollable through
-                    every expense and receipt page.
+                    {isMobileLayout
+                      ? "Preview the full PDF first, or go back and use Share / Save PDF for the faster mobile flow."
+                      : "Review the full PDF before saving. This preview is scrollable through every expense and receipt page."}
                   </DialogDescription>
                 </div>
 
@@ -2920,8 +3495,9 @@ function ProtectedExpenseEditor({
             </DialogHeader>
 
             <div className="border-b border-border/60 bg-background/60 px-3 py-2 text-xs text-muted-foreground sm:px-6 sm:py-3 sm:text-sm">
-              Confirm to open your system save prompt and write the PDF directly from this
-              preview.
+              {isMobileLayout
+                ? "From this preview you can share, save, or open the PDF using your mobile browser's best available flow."
+                : "Confirm to open your system save prompt and write the PDF directly from this preview."}
             </div>
 
             <div
@@ -2952,9 +3528,13 @@ function ProtectedExpenseEditor({
                 <p className="mr-auto max-w-md text-sm leading-6 text-destructive">
                   {printError}
                 </p>
+              ) : exportFeedbackMessage ? (
+                <p className="mr-auto text-sm text-primary">{exportFeedbackMessage}</p>
               ) : (
                 <p className="mr-auto text-sm text-muted-foreground">
-                  The saved PDF matches this preview layout.
+                  {isMobileLayout
+                    ? "This preview matches the PDF that will be shared, opened, or saved."
+                    : "The saved PDF matches this preview layout."}
                 </p>
               )}
               <Button
@@ -2977,9 +3557,15 @@ function ProtectedExpenseEditor({
                 {isSavingPdf ? (
                   <LoaderCircle className="size-4 animate-spin" />
                 ) : (
-                  <Printer className="size-4" />
+                  <Download className="size-4" />
                 )}
-                {isSavingPdf ? "Saving PDF..." : "Confirm and save PDF"}
+                {isSavingPdf
+                  ? isMobileLayout
+                    ? "Sharing / saving PDF..."
+                    : "Saving PDF..."
+                  : isMobileLayout
+                    ? "Share / Save PDF"
+                    : "Confirm and save PDF"}
               </Button>
             </DialogFooter>
           </DialogContent>

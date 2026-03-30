@@ -1,16 +1,46 @@
 import type { CompanyRecord } from "@/lib/company-data";
-import type { ExpenseSummary } from "@/lib/expense-data";
+import type { ExpenseSummary, ExportLanguage } from "@/lib/expense-data";
 import type { ExpenseDayDocument } from "@/lib/report-data";
 
 const CACHE_VERSION = 2;
 const COMPANIES_TTL_MS = 30 * 60_000;
 const EXPENSE_DAY_TTL_MS = 10 * 60_000;
+const EXPENSE_DRAFT_TTL_MS = 24 * 60 * 60_000;
 const SUMMARIES_TTL_MS = 10 * 60_000;
 
 type CacheEnvelope<T> = {
   expiresAt: number;
   value: T;
   version: number;
+};
+
+export type ExpenseDraftReceiptSnapshot = {
+  id: string;
+  name: string;
+  previewUrl: string;
+  sizeLabel: string;
+  bucketName?: string;
+  objectPath?: string;
+  mimeType?: string | null;
+  fileSizeBytes?: number | null;
+};
+
+export type ExpenseDraftRowSnapshot = {
+  id: number;
+  typeId: string;
+  amount: string;
+  remark: string;
+  receipts: ExpenseDraftReceiptSnapshot[];
+  isExpanded: boolean;
+  isReceiptPreviewOpen: boolean;
+};
+
+export type ExpenseDraftSnapshot = {
+  companyId: string;
+  employeeName: string;
+  exportLanguage: ExportLanguage;
+  note: string;
+  rows: ExpenseDraftRowSnapshot[];
 };
 
 function isBrowser() {
@@ -122,4 +152,30 @@ export function writeExpenseDayCache(
     document,
     EXPENSE_DAY_TTL_MS,
   );
+}
+
+export function readExpenseDraftCache(userKey: string, expenseDate: string) {
+  return readCacheValue<ExpenseDraftSnapshot>(
+    buildCacheKey("expense-draft", userKey, expenseDate),
+  );
+}
+
+export function writeExpenseDraftCache(
+  userKey: string,
+  expenseDate: string,
+  draft: ExpenseDraftSnapshot,
+) {
+  writeCacheValue(
+    buildCacheKey("expense-draft", userKey, expenseDate),
+    draft,
+    EXPENSE_DRAFT_TTL_MS,
+  );
+}
+
+export function clearExpenseDraftCache(userKey: string, expenseDate: string) {
+  if (!isBrowser()) {
+    return;
+  }
+
+  window.localStorage.removeItem(buildCacheKey("expense-draft", userKey, expenseDate));
 }
