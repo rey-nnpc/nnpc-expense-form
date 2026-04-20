@@ -230,9 +230,17 @@ type PendingRemoval =
       rowReference: string;
     };
 
-type PrintableFormRow = {
+type PrintableFormSourceRow = {
   lineNumber: number;
   row: ExpenseRow;
+};
+
+type PrintableFormRow = {
+  key: string;
+  lineNumber: number;
+  remarkText: string;
+  row: ExpenseRow;
+  showAmount: boolean;
 };
 
 type PrintableReceiptEntry = {
@@ -591,6 +599,24 @@ function getReceiptRenderablePreviewUrl(
   return receipt.previewUrl;
 }
 
+function getCachedReceiptDraft(receipt: ReceiptDraft) {
+  if (isPdfReceipt(receipt) && receipt.sourceUrl) {
+    return {
+      ...receipt,
+      previewUrl: receipt.sourceUrl,
+    };
+  }
+
+  return receipt;
+}
+
+function getCacheableExpenseRows(rows: ExpenseRow[]) {
+  return rows.map((row) => ({
+    ...row,
+    receipts: row.receipts.map(getCachedReceiptDraft),
+  }));
+}
+
 function buildExportFileName(reference: string, expenseDate: string) {
   const safeReference = reference
     .trim()
@@ -871,9 +897,21 @@ function getPrintableFormTableStartY({
   return headerBottom + 234;
 }
 
-function getPrintableFormRowHeight(
-  { lineNumber, row }: PrintableFormRow,
-  { displayExpenseReference, expenseDate, exportCopy, exportLanguage }: PrintableFormLayoutSource,
+function getPrintableFormTableHeights(source: PrintableFormLayoutSource) {
+  const tableStartY = getPrintableFormTableStartY(source);
+  const regularPageMaxTableHeight =
+    EXPORT_PAGE_HEIGHT_PX - EXPORT_PAGE_PADDING_PX - tableStartY;
+
+  return {
+    lastPageMaxTableHeight:
+      regularPageMaxTableHeight - EXPORT_FORM_FOOTER_CLEARANCE_PX,
+    regularPageMaxTableHeight,
+  };
+}
+
+function getPrintableFormStaticContentHeight(
+  { lineNumber, row }: PrintableFormSourceRow,
+  { displayExpenseReference, expenseDate, exportLanguage }: PrintableFormLayoutSource,
   context: CanvasRenderingContext2D | null,
 ) {
   const lineReferenceHeight = measureTextBlockHeight({
@@ -892,23 +930,31 @@ function getPrintableFormRowHeight(
     maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[1] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
     text: formatExportExpenseTypeLabel(row.typeId, exportLanguage),
   });
+
+  return Math.max(lineReferenceHeight, expenseTypeHeight, EXPORT_TABLE_AMOUNT_LINE_HEIGHT_PX);
+}
+
+function getPrintableFormRowHeight(
+  { lineNumber, remarkText, row }: PrintableFormRow,
+  source: PrintableFormLayoutSource,
+  context: CanvasRenderingContext2D | null,
+) {
+  const staticContentHeight = getPrintableFormStaticContentHeight(
+    { lineNumber, row },
+    source,
+    context,
+  );
   const remarkHeight = measureTextBlockHeight({
     context,
     font: EXPORT_TABLE_REMARK_FONT,
     lineHeight: EXPORT_TABLE_REMARK_LINE_HEIGHT_PX,
     maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[2] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
-    text: getNormalizedExportRemark(row.remark, exportCopy.emptyRemark),
+    text: remarkText,
   });
-  const contentHeight = Math.max(
-    lineReferenceHeight,
-    expenseTypeHeight,
-    remarkHeight,
-    EXPORT_TABLE_AMOUNT_LINE_HEIGHT_PX,
-  );
 
   return Math.max(
     EXPORT_TABLE_MIN_ROW_HEIGHT_PX,
-    contentHeight + EXPORT_TABLE_CELL_VERTICAL_PADDING_PX,
+    Math.max(staticContentHeight, remarkHeight) + EXPORT_TABLE_CELL_VERTICAL_PADDING_PX,
   );
 }
 
@@ -921,22 +967,71 @@ function getPrintableFormRowHeights(
   return rows.map((entry) => getPrintableFormRowHeight(entry, source, context));
 }
 
-function paginatePrintableFormRows(
-  rows: PrintableFormRow[],
+function buildPrintableFormRows(
+  rows: PrintableFormSourceRow[],
   source: PrintableFormLayoutSource,
 ) {
   if (rows.length === 0) {
-    return [rows];
+    return [] as PrintableFormRow[];
   }
 
-  const tableStartY = getPrintableFormTableStartY(source);
-  const regularPageMaxTableHeight =
-    EXPORT_PAGE_HEIGHT_PX - EXPORT_PAGE_PADDING_PX - tableStartY;
-  const lastPageMaxTableHeight =
-    regularPageMaxTableHeight - EXPORT_FORM_FOOTER_CLEARANCE_PX;
-  const rowHeights = getPrintableFormRowHeights(rows, source);
+  const context = getTextMeasureContext();
+  const { lastPageMaxTableHeight } = getPrintableFormTableHeights(source);
+  const maxRowHeight = lastPageMaxTableHeight - EXPORT_TABLE_HEADER_HEIGHT_PX;
+  const maxRemarkLinesPerSegment = Math.max(
+    1,
+    Math.floor(
+      (maxRowHeight - EXPORT_TABLE_CELL_VERTICAL_PADDING_PX) /
+        EXPORT_TABLE_REMARK_LINE_HEIGHT_PX,
+    ),
+  );
+
+  return rows.flatMap(({ lineNumber, row }) => {
+    const remarkLines = splitTextIntoLines({
+      context,
+      font: EXPORT_TABLE_REMARK_FONT,
+      maxWidth:
+        (EXPORT_TABLE_COLUMN_WIDTHS_PX[2] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
+      text: getNormalizedExportRemark(row.remark, source.exportCopy.emptyRemark),
+    });
+
+    return remarkLines.reduce<PrintableFormRow[]>((segments, _line, lineIndex) => {
+      if (lineIndex % maxRemarkLinesPerSegment !== 0) {
+        return segments;
+      }
+
+      const nextRemarkText = remarkLines
+        .slice(lineIndex, lineIndex + maxRemarkLinesPerSegment)
+        .join("\n");
+
+      segments.push({
+        key: `${row.id}-${lineNumber}-${segments.length}`,
+        lineNumber,
+        remarkText: nextRemarkText,
+        row,
+        showAmount: segments.length === 0,
+      });
+
+      return segments;
+    }, []);
+  });
+}
+
+function paginatePrintableFormRows(
+  rows: PrintableFormSourceRow[],
+  source: PrintableFormLayoutSource,
+) {
+  const printableRows = buildPrintableFormRows(rows, source);
+
+  if (printableRows.length === 0) {
+    return [[]] as PrintableFormRow[][];
+  }
+
+  const { lastPageMaxTableHeight, regularPageMaxTableHeight } =
+    getPrintableFormTableHeights(source);
+  const rowHeights = getPrintableFormRowHeights(printableRows, source);
   const pages: PrintableFormRow[][] = [];
-  let lastPageStart = rows.length;
+  let lastPageStart = printableRows.length;
   let lastPageTableHeight = EXPORT_TABLE_HEADER_HEIGHT_PX;
 
   while (lastPageStart > 0) {
@@ -970,7 +1065,7 @@ function paginatePrintableFormRows(
       currentTableHeight = EXPORT_TABLE_HEADER_HEIGHT_PX;
     }
 
-    currentPage.push(rows[index]);
+    currentPage.push(printableRows[index]);
     currentTableHeight += rowHeight;
   }
 
@@ -978,7 +1073,7 @@ function paginatePrintableFormRows(
     pages.push(currentPage);
   }
 
-  pages.push(rows.slice(lastPageStart));
+  pages.push(printableRows.slice(lastPageStart));
 
   return pages;
 }
@@ -1353,7 +1448,7 @@ async function renderFormPageCanvas(
   } else {
     let rowTop = tableY + tableHeaderHeight;
 
-    rows.forEach(({ lineNumber, row }, rowIndex) => {
+    rows.forEach(({ lineNumber, remarkText, row, showAmount }, rowIndex) => {
       const rowHeight = rowHeights[rowIndex] ?? EXPORT_TABLE_MIN_ROW_HEIGHT_PX;
 
       context.save();
@@ -1401,7 +1496,7 @@ async function renderFormPageCanvas(
         lineHeight: EXPORT_TABLE_REMARK_LINE_HEIGHT_PX,
         maxWidth:
           (EXPORT_TABLE_COLUMN_WIDTHS_PX[2] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
-        text: getNormalizedExportRemark(row.remark, source.exportCopy.emptyRemark),
+        text: remarkText,
         x: (columnLefts[2] ?? tableX) + 8,
         y: rowTop + 7,
       });
@@ -1415,9 +1510,10 @@ async function renderFormPageCanvas(
         maxLines: 1,
         maxWidth:
           (EXPORT_TABLE_COLUMN_WIDTHS_PX[3] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
-        text: row.amount.trim()
-          ? formatPrintAmount(parseAmount(row.amount), source.exportLanguage)
-          : "-",
+        text:
+          showAmount && row.amount.trim()
+            ? formatPrintAmount(parseAmount(row.amount), source.exportLanguage)
+            : "",
         x: (columnLefts[3] ?? tableX) + 8,
         y: rowTop + 11,
       });
@@ -2057,6 +2153,7 @@ function ProtectedExpenseEditor({
           isExpanded: false,
           isReceiptPreviewOpen: false,
         }));
+      const cacheableRows = getCacheableExpenseRows(persistedRows);
       const cachedCompanyLogoUrl =
         nextSnapshot.companyLogoBucketName && nextSnapshot.companyLogoObjectPath
           ? buildPublicStorageUrl(
@@ -2065,24 +2162,28 @@ function ProtectedExpenseEditor({
             )
           : "";
 
-      writeExpenseDayCache(cacheUserKey, expenseDate, {
-        companyId: nextSnapshot.companyId,
-        companyLogoBucketName: nextSnapshot.companyLogoBucketName,
-        companyLogoObjectPath: nextSnapshot.companyLogoObjectPath,
-        companyLogoUrl: cachedCompanyLogoUrl,
-        companyName: nextSnapshot.companyName,
-        employeeName: nextSnapshot.employeeName,
-        exportLanguage: nextSnapshot.exportLanguage,
-        note: nextSnapshot.note,
-        expenseCode: saveResult.expenseCode,
-        reportId: saveResult.reportId,
-        rows: persistedRows,
-      });
-      upsertExpenseSummaryCache(cacheUserKey, {
-        date: expenseDate,
-        expenseCode: saveResult.expenseCode,
-        totalAmount: persistedRows.reduce((sum, row) => sum + parseAmount(row.amount), 0),
-      });
+      try {
+        writeExpenseDayCache(cacheUserKey, expenseDate, {
+          companyId: nextSnapshot.companyId,
+          companyLogoBucketName: nextSnapshot.companyLogoBucketName,
+          companyLogoObjectPath: nextSnapshot.companyLogoObjectPath,
+          companyLogoUrl: cachedCompanyLogoUrl,
+          companyName: nextSnapshot.companyName,
+          employeeName: nextSnapshot.employeeName,
+          exportLanguage: nextSnapshot.exportLanguage,
+          note: nextSnapshot.note,
+          expenseCode: saveResult.expenseCode,
+          reportId: saveResult.reportId,
+          rows: cacheableRows,
+        });
+        upsertExpenseSummaryCache(cacheUserKey, {
+          date: expenseDate,
+          expenseCode: saveResult.expenseCode,
+          totalAmount: persistedRows.reduce((sum, row) => sum + parseAmount(row.amount), 0),
+        });
+      } catch {
+        // Local cache writes are best-effort and should not override a successful save.
+      }
 
       if (saveResult.didUpload) {
         skipNextAutosaveRef.current = true;
@@ -2299,26 +2400,25 @@ function ProtectedExpenseEditor({
 
   const rowNumberById = new Map(rows.map((row, index) => [row.id, index + 1]));
   const populatedRows = rows.filter(hasRowContent);
-  const populatedRowsWithLineNumbers: PrintableFormRow[] = populatedRows.map((row, index) => ({
-    lineNumber: index + 1,
-    row,
-  }));
+  const populatedRowsWithLineNumbers: PrintableFormSourceRow[] = populatedRows.map(
+    (row, index) => ({
+      lineNumber: index + 1,
+      row,
+    }),
+  );
   const displayExpenseReference = formatExpenseReferenceCode(expenseDate, expenseCode);
   const printableEmployeeName = employeeName || defaultEmployeeName;
   const totalAmount = rows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const totalReceipts = rows.reduce((sum, row) => sum + row.receipts.length, 0);
   const exportCopy = EXPORT_COPY[exportLanguage];
   const hasStoredCompanySnapshot = Boolean(loadedCompanyName.trim() || loadedCompanyLogoUrl);
-  const printableFormPages =
-    populatedRowsWithLineNumbers.length > 0
-      ? paginatePrintableFormRows(populatedRowsWithLineNumbers, {
-          displayExpenseReference,
-          expenseDate,
-          exportCopy,
-          exportLanguage,
-          selectedCompanyName,
-        })
-      : [populatedRowsWithLineNumbers];
+  const printableFormPages = paginatePrintableFormRows(populatedRowsWithLineNumbers, {
+    displayExpenseReference,
+    expenseDate,
+    exportCopy,
+    exportLanguage,
+    selectedCompanyName,
+  });
   const exportValidationMessage =
     !selectedCompanyName.trim()
       ? companies.length === 0 && !hasStoredCompanySnapshot
@@ -3344,9 +3444,9 @@ function ProtectedExpenseEditor({
                         <Globe2 className="size-4" />
                       </span>
                       <p className="text-sm leading-7 text-foreground">
-                        The PDF fits up to fifteen expense lines per page, keeps the same
-                        layout on continuation pages, and adds up to four receipt files
-                        on each extra page.
+                        The PDF keeps long remarks readable by expanding rows across
+                        continuation pages and adds up to four receipt files on each extra
+                        page.
                       </p>
                     </div>
                   </div>
@@ -3716,10 +3816,10 @@ function PrintExpenseFormPage({
               </div>
             </div>
 
-            {rows.map(({ lineNumber, row }) => (
+            {rows.map(({ key, lineNumber, remarkText, row, showAmount }) => (
               <div
                 className="grid text-[10px] text-black"
-                key={row.id}
+                key={key}
                 style={{ gridTemplateColumns: PRINT_TABLE_GRID_TEMPLATE }}
               >
                 <div className="border-r border-b border-black/25 px-2 py-1.5 text-[8px] font-semibold leading-[0.92rem] [overflow-wrap:anywhere]">
@@ -3736,13 +3836,13 @@ function PrintExpenseFormPage({
                 </div>
                 <div className="border-r border-b border-black/25 px-2 py-1.5">
                   <p className="leading-[1rem] whitespace-pre-line text-black/78 [overflow-wrap:anywhere]">
-                    {getNormalizedExportRemark(row.remark, exportCopy.emptyRemark)}
+                    {remarkText}
                   </p>
                 </div>
                 <div className="border-b border-black/25 px-2 py-1.5 text-right font-medium">
-                  {row.amount.trim()
+                  {showAmount && row.amount.trim()
                     ? formatPrintAmount(parseAmount(row.amount), exportLanguage)
-                    : "-"}
+                    : ""}
                 </div>
               </div>
             ))}
