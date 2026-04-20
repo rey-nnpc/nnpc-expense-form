@@ -10,6 +10,7 @@ import {
   EXPENSE_TYPES,
   formatFileSize,
   hasRowContent,
+  isPdfReceipt,
   type ExpenseRow,
   type ExpenseSummary,
   type ExportLanguage,
@@ -69,10 +70,12 @@ export type ExpenseDayDocument = {
 };
 
 function buildReceiptDraftFromRow(row: ReceiptRow): ReceiptDraft {
+  const sourceUrl = buildPublicStorageUrl(row.bucket_name, row.object_path);
+
   return {
     id: row.id,
     name: row.original_file_name,
-    previewUrl: buildPublicStorageUrl(row.bucket_name, row.object_path),
+    previewUrl: sourceUrl,
     sizeLabel:
       typeof row.file_size_bytes === "number"
         ? formatFileSize(row.file_size_bytes)
@@ -80,6 +83,7 @@ function buildReceiptDraftFromRow(row: ReceiptRow): ReceiptDraft {
     bucketName: row.bucket_name,
     objectPath: row.object_path,
     mimeType: row.mime_type,
+    sourceUrl,
     fileSizeBytes: row.file_size_bytes,
   };
 }
@@ -135,12 +139,15 @@ async function materializeReceipts({
 
           didUpload = true;
 
+          const sourceUrl = buildPublicStorageUrl(EXPENSE_RECEIPTS_BUCKET, objectPath);
+
           return {
             ...receipt,
             bucketName: EXPENSE_RECEIPTS_BUCKET,
             objectPath,
-            previewUrl: buildPublicStorageUrl(EXPENSE_RECEIPTS_BUCKET, objectPath),
+            previewUrl: isPdfReceipt(receipt) ? receipt.previewUrl : sourceUrl,
             mimeType: receipt.file.type || receipt.mimeType || null,
+            sourceUrl,
             fileSizeBytes: receipt.file.size,
             sizeLabel: formatFileSize(receipt.file.size),
             file: undefined,

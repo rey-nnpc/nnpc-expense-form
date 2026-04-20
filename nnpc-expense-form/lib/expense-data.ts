@@ -11,6 +11,7 @@ export type ReceiptDraft = {
   bucketName?: string;
   objectPath?: string;
   mimeType?: string | null;
+  sourceUrl?: string;
   file?: File;
   fileSizeBytes?: number | null;
 };
@@ -85,6 +86,13 @@ export function formatFileSize(fileSizeBytes: number) {
   }
 
   return `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function isPdfReceipt({
+  mimeType,
+  name,
+}: Pick<ReceiptDraft, "mimeType" | "name">) {
+  return mimeType?.toLowerCase() === "application/pdf" || name.toLowerCase().endsWith(".pdf");
 }
 
 export function deriveDisplayName(email: string) {

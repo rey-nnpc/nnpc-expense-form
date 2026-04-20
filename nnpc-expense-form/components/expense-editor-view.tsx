@@ -100,6 +100,7 @@ import {
   formatCurrency,
   formatFileSize,
   hasRowContent,
+  isPdfReceipt,
   parseAmount,
   type ExpenseRow,
   type ExportLanguage,
@@ -114,12 +115,24 @@ import {
 import { buildPublicStorageUrl } from "../lib/supabase-api";
 
 const EMPTY_COMPANY_VALUE = "__none__";
-const EXPORT_FORM_ROWS_PER_PAGE = 15;
 const RECEIPTS_PER_PAGE = 4;
 const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
 const PRINT_TABLE_GRID_TEMPLATE = "1.6fr 1.75fr 2.95fr 1.25fr";
 const EXPORT_PAGE_WIDTH_PX = 794;
 const EXPORT_PAGE_HEIGHT_PX = 1123;
+const EXPORT_TABLE_HEADER_HEIGHT_PX = 30;
+const EXPORT_TABLE_MIN_ROW_HEIGHT_PX = 38;
+const EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX = 16;
+const EXPORT_TABLE_CELL_VERTICAL_PADDING_PX = 12;
+const EXPORT_TABLE_REFERENCE_FONT = "700 8px Arial, sans-serif";
+const EXPORT_TABLE_REFERENCE_LINE_HEIGHT_PX = 10;
+const EXPORT_TABLE_TYPE_FONT = "600 11px Arial, sans-serif";
+const EXPORT_TABLE_TYPE_LINE_HEIGHT_PX = 13;
+const EXPORT_TABLE_REMARK_FONT = "400 10px Arial, sans-serif";
+const EXPORT_TABLE_REMARK_LINE_HEIGHT_PX = 13;
+const EXPORT_TABLE_AMOUNT_FONT = "600 11px Arial, sans-serif";
+const EXPORT_TABLE_AMOUNT_LINE_HEIGHT_PX = 13;
+const EXPORT_FORM_FOOTER_CLEARANCE_PX = 114;
 
 const EXPORT_COPY: Record<
   ExportLanguage,
@@ -232,6 +245,14 @@ type PrintableReceiptEntry = {
 
 type ExportCopy = (typeof EXPORT_COPY)[ExportLanguage];
 
+type PrintableFormLayoutSource = {
+  displayExpenseReference: string;
+  expenseDate: string;
+  exportCopy: ExportCopy;
+  exportLanguage: ExportLanguage;
+  selectedCompanyName: string;
+};
+
 type ExportFileHandle = {
   createWritable: () => Promise<{
     close: () => Promise<void>;
@@ -263,6 +284,7 @@ type ExportPdfSource = {
   exportLanguage: ExportLanguage;
   note: string;
   printableFormPages: PrintableFormRow[][];
+  receiptPreviewUrlMap: Record<string, string>;
   receiptPages: PrintableReceiptEntry[][];
   selectedCompanyLogoUrl: string;
   selectedCompanyName: string;
@@ -278,6 +300,11 @@ type PendingSaveSnapshot = {
   exportLanguage: ExportLanguage;
   note: string;
   rows: ExpenseRow[];
+};
+
+type ReceiptUploadIssue = {
+  description: string;
+  title: string;
 };
 
 export default function ExpenseEditorView({
@@ -303,18 +330,29 @@ async function toReceiptDrafts(rowId: number, files: FileList | null) {
   const fileEntries = Array.from(files ?? []);
 
   return Promise.all(
-    fileEntries.map(async (file, index) => ({
-      id:
-        typeof crypto.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `${rowId}-${Date.now()}-${index}-${file.name}`,
-      file,
-      fileSizeBytes: file.size,
-      mimeType: file.type || null,
-      name: file.name,
-      previewUrl: await readFileAsDataUrl(file),
-      sizeLabel: formatFileSize(file.size),
-    })),
+    fileEntries.map(async (file, index) => {
+      const mimeType = file.type || null;
+      const name = file.name;
+      const isPdfFile = isPdfReceipt({ mimeType, name });
+      const sourceUrl = isPdfFile ? await readFileAsDataUrl(file) : undefined;
+      const previewUrl = isPdfFile
+        ? await renderPdfFirstPagePreview(new Uint8Array(await file.arrayBuffer()))
+        : await readFileAsDataUrl(file);
+
+      return {
+        id:
+          typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `${rowId}-${Date.now()}-${index}-${file.name}`,
+        file,
+        fileSizeBytes: file.size,
+        mimeType,
+        name,
+        previewUrl,
+        sizeLabel: formatFileSize(file.size),
+        sourceUrl,
+      };
+    }),
   );
 }
 
@@ -339,6 +377,69 @@ function readFileAsDataUrl(file: File) {
   });
 }
 
+let pdfJsPromise: Promise<typeof import("pdfjs-dist/webpack.mjs")> | null = null;
+
+function loadPdfJs() {
+  pdfJsPromise ??= import("pdfjs-dist/webpack.mjs");
+  return pdfJsPromise;
+}
+
+async function renderPdfFirstPagePreview(source: Uint8Array | string) {
+  const pdfjs = await loadPdfJs();
+  const loadingTask =
+    typeof source === "string"
+      ? pdfjs.getDocument(source)
+      : pdfjs.getDocument({ data: source });
+
+  try {
+    const pdf = await loadingTask.promise;
+
+    try {
+      if (pdf.numPages !== 1) {
+        throw new Error(
+          `This PDF has ${pdf.numPages} pages. Only single-page PDF invoices are allowed.`,
+        );
+      }
+
+      const page = await pdf.getPage(1);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, Math.max(1.25, 920 / baseViewport.width));
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+
+      const context = canvas.getContext("2d");
+
+      if (!context) {
+        throw new Error("PDF preview could not be prepared.");
+      }
+
+      await page.render({ canvas, canvasContext: context, viewport }).promise;
+      page.cleanup();
+
+      return canvas.toDataURL("image/png");
+    } finally {
+      pdf.cleanup();
+    }
+  } finally {
+    await loadingTask.destroy();
+  }
+}
+
+function getReceiptUploadIssue(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+
+  if (/only single-page pdf invoices are allowed/i.test(message)) {
+    return {
+      description: "Please upload a one-page invoice PDF.",
+      title: "This PDF Can’t Be Uploaded",
+    } satisfies ReceiptUploadIssue;
+  }
+
+  return null;
+}
+
 function getFriendlyEditorError(
   error: unknown,
   action: "load" | "save" | "receipt" | "print",
@@ -359,7 +460,7 @@ function getFriendlyEditorError(
     }
 
     if (action === "print") {
-      return "We couldn't prepare the receipt photos for PDF export. Please try again in a moment.";
+      return "We couldn't prepare the receipt files for PDF export. Please try again in a moment.";
     }
 
     return "We couldn't save your latest changes right now. Please check your internet connection and try again.";
@@ -370,7 +471,11 @@ function getFriendlyEditorError(
   }
 
   if (action === "receipt") {
-    return "One of the receipt photos could not be added. Please try a different image.";
+    if (/single-page PDF invoices/i.test(message)) {
+      return "Only one-page PDF invoices are allowed for receipt uploads.";
+    }
+
+    return "One of the receipt files could not be added. Please try a different image or one-page PDF.";
   }
 
   if (action === "load") {
@@ -469,6 +574,23 @@ function waitForNextFrame() {
   });
 }
 
+function getReceiptRenderablePreviewUrl(
+  receipt: ReceiptDraft,
+  receiptPreviewUrlMap: Record<string, string>,
+) {
+  const resolvedPreviewUrl = receiptPreviewUrlMap[receipt.id];
+
+  if (resolvedPreviewUrl) {
+    return resolvedPreviewUrl;
+  }
+
+  if (isPdfReceipt(receipt) && receipt.sourceUrl && receipt.previewUrl === receipt.sourceUrl) {
+    return "";
+  }
+
+  return receipt.previewUrl;
+}
+
 function buildExportFileName(reference: string, expenseDate: string) {
   const safeReference = reference
     .trim()
@@ -506,66 +628,142 @@ function createExportPageCanvas() {
   return { canvas, context };
 }
 
+function getApproximateCharacterWidth(font: string) {
+  const fontSizeMatch = font.match(/(\d+(?:\.\d+)?)px/);
+  const fontSize = fontSizeMatch ? Number(fontSizeMatch[1]) : 12;
+
+  return fontSize * 0.56;
+}
+
+function measureTextLineWidth(
+  context: CanvasRenderingContext2D | null,
+  text: string,
+  approximateCharacterWidth: number,
+) {
+  if (context) {
+    return context.measureText(text).width;
+  }
+
+  return Array.from(text).length * approximateCharacterWidth;
+}
+
 function truncateTextToWidth(
-  context: CanvasRenderingContext2D,
+  context: CanvasRenderingContext2D | null,
+  approximateCharacterWidth: number,
   text: string,
   maxWidth: number,
 ) {
   let nextText = text.trimEnd();
 
-  while (nextText && context.measureText(`${nextText}\u2026`).width > maxWidth) {
+  while (
+    nextText &&
+    measureTextLineWidth(context, `${nextText}\u2026`, approximateCharacterWidth) > maxWidth
+  ) {
     nextText = nextText.slice(0, -1);
   }
 
   return nextText ? `${nextText}\u2026` : "\u2026";
 }
 
-function splitTextIntoLines(
-  context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  maxLines: number,
-) {
-  const normalizedText = text.replace(/\s+/g, " ").trim();
+function normalizeExportText(text: string) {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function getNormalizedExportRemark(remark: string, emptyRemark: string) {
+  const normalizedRemark = normalizeExportText(remark);
+
+  return normalizedRemark || emptyRemark;
+}
+
+function splitTextIntoLines({
+  context,
+  font,
+  maxLines,
+  maxWidth,
+  text,
+}: {
+  context: CanvasRenderingContext2D | null;
+  font: string;
+  maxLines?: number;
+  maxWidth: number;
+  text: string;
+}) {
+  const normalizedText = normalizeExportText(text);
 
   if (!normalizedText) {
     return [] as string[];
   }
 
+  const characters = Array.from(normalizedText);
+  const lineLimit = maxLines ?? Number.POSITIVE_INFINITY;
   const lines: string[] = [];
   let currentLine = "";
+  let didTruncate = false;
+  const approximateCharacterWidth = getApproximateCharacterWidth(font);
 
-  for (const character of Array.from(normalizedText)) {
+  if (context) {
+    context.save();
+    context.font = font;
+  }
+
+  for (const [index, character] of characters.entries()) {
+    if (character === "\n") {
+      if (currentLine.trim()) {
+        lines.push(currentLine.trim());
+
+        if (lines.length === lineLimit && index < characters.length - 1) {
+          didTruncate = true;
+          break;
+        }
+      }
+
+      currentLine = "";
+      continue;
+    }
+
     const candidate = `${currentLine}${character}`;
 
-    if (context.measureText(candidate).width <= maxWidth || currentLine.length === 0) {
+    if (
+      measureTextLineWidth(context, candidate, approximateCharacterWidth) <= maxWidth ||
+      currentLine.length === 0
+    ) {
       currentLine = candidate;
       continue;
     }
 
     lines.push(currentLine.trim());
-    currentLine = character;
+    currentLine = character === " " ? "" : character;
 
-    if (lines.length === maxLines) {
+    if (lines.length === lineLimit) {
+      didTruncate = true;
       break;
     }
   }
 
-  if (lines.length < maxLines && currentLine.trim()) {
+  if (!didTruncate && currentLine.trim()) {
     lines.push(currentLine.trim());
   }
 
-  const joinedLines = lines.join("");
-
-  if (joinedLines.length < normalizedText.length && lines.length > 0) {
+  if (didTruncate && maxLines !== undefined && lines.length > 0) {
     lines[lines.length - 1] = truncateTextToWidth(
       context,
+      approximateCharacterWidth,
       lines[lines.length - 1] ?? "",
       maxWidth,
     );
   }
 
-  return lines.slice(0, maxLines);
+  if (context) {
+    context.restore();
+  }
+
+  return maxLines === undefined ? lines : lines.slice(0, maxLines);
 }
 
 function drawTextBlock({
@@ -585,7 +783,7 @@ function drawTextBlock({
   context: CanvasRenderingContext2D;
   font: string;
   lineHeight: number;
-  maxLines: number;
+  maxLines?: number;
   maxWidth: number;
   text: string;
   x: number;
@@ -595,7 +793,13 @@ function drawTextBlock({
   context.fillStyle = color;
   context.font = font;
 
-  const lines = splitTextIntoLines(context, text, maxWidth, maxLines);
+  const lines = splitTextIntoLines({
+    context,
+    font,
+    maxLines,
+    maxWidth,
+    text,
+  });
 
   lines.forEach((line, index) => {
     const drawX =
@@ -607,6 +811,176 @@ function drawTextBlock({
   context.restore();
 
   return lines.length * lineHeight;
+}
+
+function measureTextBlockHeight({
+  context,
+  font,
+  lineHeight,
+  maxLines,
+  maxWidth,
+  text,
+}: {
+  context: CanvasRenderingContext2D | null;
+  font: string;
+  lineHeight: number;
+  maxLines?: number;
+  maxWidth: number;
+  text: string;
+}) {
+  return (
+    splitTextIntoLines({
+      context,
+      font,
+      maxLines,
+      maxWidth,
+      text,
+    }).length * lineHeight
+  );
+}
+
+function getTextMeasureContext() {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  return document.createElement("canvas").getContext("2d");
+}
+
+function getPrintableFormTableStartY({
+  exportCopy,
+  selectedCompanyName,
+}: Pick<PrintableFormLayoutSource, "exportCopy" | "selectedCompanyName">) {
+  const context = getTextMeasureContext();
+  const logoSize = 64;
+  const headerTextWidth = EXPORT_CONTENT_WIDTH_PX - logoSize - 120;
+  const companyNameHeight = measureTextBlockHeight({
+    context,
+    font: "600 28px Georgia, 'Times New Roman', serif",
+    lineHeight: 24,
+    maxLines: 2,
+    maxWidth: headerTextWidth,
+    text: selectedCompanyName || exportCopy.companyPending,
+  });
+  const hasFormSubtitle = Boolean(exportCopy.formSubtitle.trim());
+  const titleY = hasFormSubtitle
+    ? EXPORT_PAGE_PADDING_PX + 40 + companyNameHeight
+    : EXPORT_PAGE_PADDING_PX + 24 + companyNameHeight;
+  const headerBottom = Math.max(EXPORT_PAGE_PADDING_PX + logoSize, titleY + 18);
+
+  return headerBottom + 234;
+}
+
+function getPrintableFormRowHeight(
+  { lineNumber, row }: PrintableFormRow,
+  { displayExpenseReference, expenseDate, exportCopy, exportLanguage }: PrintableFormLayoutSource,
+  context: CanvasRenderingContext2D | null,
+) {
+  const lineReferenceHeight = measureTextBlockHeight({
+    context,
+    font: EXPORT_TABLE_REFERENCE_FONT,
+    lineHeight: EXPORT_TABLE_REFERENCE_LINE_HEIGHT_PX,
+    maxLines: 2,
+    maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[0] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
+    text: formatExpenseLineReferenceCode(expenseDate, lineNumber, displayExpenseReference),
+  });
+  const expenseTypeHeight = measureTextBlockHeight({
+    context,
+    font: EXPORT_TABLE_TYPE_FONT,
+    lineHeight: EXPORT_TABLE_TYPE_LINE_HEIGHT_PX,
+    maxLines: 2,
+    maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[1] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
+    text: formatExportExpenseTypeLabel(row.typeId, exportLanguage),
+  });
+  const remarkHeight = measureTextBlockHeight({
+    context,
+    font: EXPORT_TABLE_REMARK_FONT,
+    lineHeight: EXPORT_TABLE_REMARK_LINE_HEIGHT_PX,
+    maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[2] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
+    text: getNormalizedExportRemark(row.remark, exportCopy.emptyRemark),
+  });
+  const contentHeight = Math.max(
+    lineReferenceHeight,
+    expenseTypeHeight,
+    remarkHeight,
+    EXPORT_TABLE_AMOUNT_LINE_HEIGHT_PX,
+  );
+
+  return Math.max(
+    EXPORT_TABLE_MIN_ROW_HEIGHT_PX,
+    contentHeight + EXPORT_TABLE_CELL_VERTICAL_PADDING_PX,
+  );
+}
+
+function getPrintableFormRowHeights(
+  rows: PrintableFormRow[],
+  source: PrintableFormLayoutSource,
+) {
+  const context = getTextMeasureContext();
+
+  return rows.map((entry) => getPrintableFormRowHeight(entry, source, context));
+}
+
+function paginatePrintableFormRows(
+  rows: PrintableFormRow[],
+  source: PrintableFormLayoutSource,
+) {
+  if (rows.length === 0) {
+    return [rows];
+  }
+
+  const tableStartY = getPrintableFormTableStartY(source);
+  const regularPageMaxTableHeight =
+    EXPORT_PAGE_HEIGHT_PX - EXPORT_PAGE_PADDING_PX - tableStartY;
+  const lastPageMaxTableHeight =
+    regularPageMaxTableHeight - EXPORT_FORM_FOOTER_CLEARANCE_PX;
+  const rowHeights = getPrintableFormRowHeights(rows, source);
+  const pages: PrintableFormRow[][] = [];
+  let lastPageStart = rows.length;
+  let lastPageTableHeight = EXPORT_TABLE_HEADER_HEIGHT_PX;
+
+  while (lastPageStart > 0) {
+    const nextHeight =
+      lastPageTableHeight + (rowHeights[lastPageStart - 1] ?? EXPORT_TABLE_MIN_ROW_HEIGHT_PX);
+
+    if (nextHeight > lastPageMaxTableHeight && lastPageStart < rows.length) {
+      break;
+    }
+
+    lastPageTableHeight = nextHeight;
+    lastPageStart -= 1;
+
+    if (nextHeight > lastPageMaxTableHeight) {
+      break;
+    }
+  }
+
+  let currentPage: PrintableFormRow[] = [];
+  let currentTableHeight = EXPORT_TABLE_HEADER_HEIGHT_PX;
+
+  for (let index = 0; index < lastPageStart; index += 1) {
+    const rowHeight = rowHeights[index] ?? EXPORT_TABLE_MIN_ROW_HEIGHT_PX;
+
+    if (
+      currentPage.length > 0 &&
+      currentTableHeight + rowHeight > regularPageMaxTableHeight
+    ) {
+      pages.push(currentPage);
+      currentPage = [];
+      currentTableHeight = EXPORT_TABLE_HEADER_HEIGHT_PX;
+    }
+
+    currentPage.push(rows[index]);
+    currentTableHeight += rowHeight;
+  }
+
+  if (currentPage.length > 0) {
+    pages.push(currentPage);
+  }
+
+  pages.push(rows.slice(lastPageStart));
+
+  return pages;
 }
 
 function drawHorizontalRule(
@@ -890,12 +1264,18 @@ async function renderFormPageCanvas(
 
   const tableX = contentX;
   const tableY = y;
-  const tableHeaderHeight = 30;
-  const tableRowHeight = 38;
+  const tableHeaderHeight = EXPORT_TABLE_HEADER_HEIGHT_PX;
+  const rowHeights = getPrintableFormRowHeights(rows, {
+    displayExpenseReference: source.displayExpenseReference,
+    expenseDate: source.expenseDate,
+    exportCopy: source.exportCopy,
+    exportLanguage: source.exportLanguage,
+    selectedCompanyName: source.selectedCompanyName,
+  });
   const tableHeight =
     rows.length === 0
       ? 48
-      : tableHeaderHeight + tableRowHeight * rows.length;
+      : tableHeaderHeight + rowHeights.reduce((sum, rowHeight) => sum + rowHeight, 0);
 
   context.save();
   context.fillStyle = "rgba(0,0,0,0.035)";
@@ -971,24 +1351,27 @@ async function renderFormPageCanvas(
       y: tableY + tableHeaderHeight + 12,
     });
   } else {
+    let rowTop = tableY + tableHeaderHeight;
+
     rows.forEach(({ lineNumber, row }, rowIndex) => {
-      const rowTop = tableY + tableHeaderHeight + rowIndex * tableRowHeight;
+      const rowHeight = rowHeights[rowIndex] ?? EXPORT_TABLE_MIN_ROW_HEIGHT_PX;
 
       context.save();
       context.beginPath();
       context.strokeStyle = "rgba(0,0,0,0.25)";
-      context.moveTo(tableX, rowTop + tableRowHeight);
-      context.lineTo(tableX + contentWidth, rowTop + tableRowHeight);
+      context.moveTo(tableX, rowTop + rowHeight);
+      context.lineTo(tableX + contentWidth, rowTop + rowHeight);
       context.stroke();
       context.restore();
 
       drawTextBlock({
         color: "#000000",
         context,
-        font: "700 8px Arial, sans-serif",
-        lineHeight: 10,
+        font: EXPORT_TABLE_REFERENCE_FONT,
+        lineHeight: EXPORT_TABLE_REFERENCE_LINE_HEIGHT_PX,
         maxLines: 2,
-        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[0] ?? 0) - 16,
+        maxWidth:
+          (EXPORT_TABLE_COLUMN_WIDTHS_PX[0] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
         text: formatExpenseLineReferenceCode(
           source.expenseDate,
           lineNumber,
@@ -1001,10 +1384,11 @@ async function renderFormPageCanvas(
       drawTextBlock({
         color: "#000000",
         context,
-        font: "600 11px Arial, sans-serif",
-        lineHeight: 13,
+        font: EXPORT_TABLE_TYPE_FONT,
+        lineHeight: EXPORT_TABLE_TYPE_LINE_HEIGHT_PX,
         maxLines: 2,
-        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[1] ?? 0) - 16,
+        maxWidth:
+          (EXPORT_TABLE_COLUMN_WIDTHS_PX[1] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
         text: formatExportExpenseTypeLabel(row.typeId, source.exportLanguage),
         x: (columnLefts[1] ?? tableX) + 8,
         y: rowTop + 7,
@@ -1013,11 +1397,11 @@ async function renderFormPageCanvas(
       drawTextBlock({
         color: "rgba(0,0,0,0.78)",
         context,
-        font: "400 10px Arial, sans-serif",
-        lineHeight: 13,
-        maxLines: 2,
-        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[2] ?? 0) - 16,
-        text: row.remark || source.exportCopy.emptyRemark,
+        font: EXPORT_TABLE_REMARK_FONT,
+        lineHeight: EXPORT_TABLE_REMARK_LINE_HEIGHT_PX,
+        maxWidth:
+          (EXPORT_TABLE_COLUMN_WIDTHS_PX[2] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
+        text: getNormalizedExportRemark(row.remark, source.exportCopy.emptyRemark),
         x: (columnLefts[2] ?? tableX) + 8,
         y: rowTop + 7,
       });
@@ -1026,16 +1410,19 @@ async function renderFormPageCanvas(
         align: "right",
         color: "#000000",
         context,
-        font: "600 11px Arial, sans-serif",
-        lineHeight: 13,
+        font: EXPORT_TABLE_AMOUNT_FONT,
+        lineHeight: EXPORT_TABLE_AMOUNT_LINE_HEIGHT_PX,
         maxLines: 1,
-        maxWidth: (EXPORT_TABLE_COLUMN_WIDTHS_PX[3] ?? 0) - 16,
+        maxWidth:
+          (EXPORT_TABLE_COLUMN_WIDTHS_PX[3] ?? 0) - EXPORT_TABLE_CELL_HORIZONTAL_PADDING_PX,
         text: row.amount.trim()
           ? formatPrintAmount(parseAmount(row.amount), source.exportLanguage)
           : "-",
         x: (columnLefts[3] ?? tableX) + 8,
         y: rowTop + 11,
       });
+
+      rowTop += rowHeight;
     });
   }
 
@@ -1142,7 +1529,10 @@ async function renderReceiptPageCanvas(
     const cardX = contentX + columnIndex * (cellWidth + gridGap);
     const cardY = y + rowIndex * (itemHeight + gridGap);
     const receiptPreviewUrl =
-      source.assetUrlMap[entry.receipt.previewUrl] ?? entry.receipt.previewUrl;
+      source.assetUrlMap[
+        getReceiptRenderablePreviewUrl(entry.receipt, source.receiptPreviewUrlMap)
+      ] ??
+      getReceiptRenderablePreviewUrl(entry.receipt, source.receiptPreviewUrlMap);
     const receiptImage = await loadCanvasImage(receiptPreviewUrl, imageCache);
 
     drawTextBlock({
@@ -1439,8 +1829,10 @@ function ProtectedExpenseEditor({
   const [isMobileExportPreview, setIsMobileExportPreview] = useState(false);
   const [exportPreviewScale, setExportPreviewScale] = useState(1);
   const [exportAssetUrlMap, setExportAssetUrlMap] = useState<Record<string, string>>({});
+  const [receiptPreviewUrlMap, setReceiptPreviewUrlMap] = useState<Record<string, string>>({});
   const [printError, setPrintError] = useState<string | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
+  const [receiptUploadIssue, setReceiptUploadIssue] = useState<ReceiptUploadIssue | null>(null);
   const pendingSaveRef = useRef<PendingSaveSnapshot | null>(null);
   const isPersistingRef = useRef(false);
   const activeSavePromiseRef = useRef<Promise<string | null> | null>(null);
@@ -1449,6 +1841,8 @@ function ProtectedExpenseEditor({
   const hasLoadedDocumentRef = useRef(false);
   const exportAssetObjectUrlsRef = useRef<string[]>([]);
   const exportPreviewViewportRef = useRef<HTMLDivElement | null>(null);
+  const receiptPreviewUrlMapRef = useRef<Record<string, string>>({});
+  const receiptPreviewPromisesRef = useRef<Map<string, Promise<string>>>(new Map());
 
   const applyLoadedDocument = useEffectEvent((
     existingReport: ExpenseDayDocument | null,
@@ -1456,6 +1850,9 @@ function ProtectedExpenseEditor({
   ) => {
     setCompanies(nextCompanies);
     setDocumentError(null);
+    setReceiptPreviewUrlMap({});
+    receiptPreviewUrlMapRef.current = {};
+    receiptPreviewPromisesRef.current.clear();
 
     if (!existingReport) {
       setEmployeeName(defaultEmployeeName);
@@ -1571,6 +1968,60 @@ function ProtectedExpenseEditor({
     (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoObjectPath : "");
   const selectedCompanyLogoUrl =
     selectedCompany?.logoUrl ?? (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoUrl : "");
+
+  const ensureReceiptPreviewUrl = useEffectEvent(async (receipt: ReceiptDraft) => {
+    if (!isPdfReceipt(receipt)) {
+      return receipt.previewUrl;
+    }
+
+    const existingPreviewUrl = receiptPreviewUrlMapRef.current[receipt.id];
+
+    if (existingPreviewUrl) {
+      return existingPreviewUrl;
+    }
+
+    if (receipt.sourceUrl && receipt.previewUrl !== receipt.sourceUrl) {
+      return receipt.previewUrl;
+    }
+
+    const existingPromise = receiptPreviewPromisesRef.current.get(receipt.id);
+
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const previewPromise = renderPdfFirstPagePreview(receipt.sourceUrl ?? receipt.previewUrl)
+      .then((previewUrl) => {
+        receiptPreviewUrlMapRef.current = {
+          ...receiptPreviewUrlMapRef.current,
+          [receipt.id]: previewUrl,
+        };
+        setReceiptPreviewUrlMap((currentMap) =>
+          currentMap[receipt.id] === previewUrl
+            ? currentMap
+            : {
+                ...currentMap,
+                [receipt.id]: previewUrl,
+              },
+        );
+
+        return previewUrl;
+      })
+      .finally(() => {
+        receiptPreviewPromisesRef.current.delete(receipt.id);
+      });
+
+    receiptPreviewPromisesRef.current.set(receipt.id, previewPromise);
+    return previewPromise;
+  });
+
+  const ensureReceiptPreviewsReady = useEffectEvent(async (receipts: ReceiptDraft[]) => {
+    const previewEntries = await Promise.all(
+      receipts.map(async (receipt) => [receipt.id, await ensureReceiptPreviewUrl(receipt)] as const),
+    );
+
+    return Object.fromEntries(previewEntries);
+  });
 
   const persistSnapshot = async (nextSnapshot: PendingSaveSnapshot) => {
     isPersistingRef.current = true;
@@ -1728,6 +2179,31 @@ function ProtectedExpenseEditor({
   };
 
   useEffect(() => {
+    receiptPreviewUrlMapRef.current = receiptPreviewUrlMap;
+  }, [receiptPreviewUrlMap]);
+
+  useEffect(() => {
+    const pdfReceipts = rows
+      .flatMap((row) => row.receipts)
+      .filter(
+        (receipt) =>
+          isPdfReceipt(receipt) &&
+          !receiptPreviewUrlMapRef.current[receipt.id] &&
+          (!receipt.sourceUrl || receipt.previewUrl === receipt.sourceUrl),
+      );
+
+    if (pdfReceipts.length === 0) {
+      return;
+    }
+
+    void Promise.all(pdfReceipts.map((receipt) => ensureReceiptPreviewUrl(receipt))).catch(
+      () => {
+        // Keep the editor usable even if a saved PDF thumbnail cannot be generated immediately.
+      },
+    );
+  }, [rows]);
+
+  useEffect(() => {
     if (!hasLoadedDocumentRef.current) {
       return;
     }
@@ -1835,7 +2311,13 @@ function ProtectedExpenseEditor({
   const hasStoredCompanySnapshot = Boolean(loadedCompanyName.trim() || loadedCompanyLogoUrl);
   const printableFormPages =
     populatedRowsWithLineNumbers.length > 0
-      ? chunkEntries(populatedRowsWithLineNumbers, EXPORT_FORM_ROWS_PER_PAGE)
+      ? paginatePrintableFormRows(populatedRowsWithLineNumbers, {
+          displayExpenseReference,
+          expenseDate,
+          exportCopy,
+          exportLanguage,
+          selectedCompanyName,
+        })
       : [populatedRowsWithLineNumbers];
   const exportValidationMessage =
     !selectedCompanyName.trim()
@@ -1865,7 +2347,9 @@ function ProtectedExpenseEditor({
   const receiptPages = chunkEntries(printableReceipts, RECEIPTS_PER_PAGE);
   const printableAssetUrls = [
     selectedCompanyLogoUrl,
-    ...printableReceipts.map((entry) => entry.receipt.previewUrl),
+    ...printableReceipts.map((entry) =>
+      getReceiptRenderablePreviewUrl(entry.receipt, receiptPreviewUrlMap),
+    ),
   ].filter(Boolean);
   const exportSelectedCompanyLogoUrl =
     exportAssetUrlMap[selectedCompanyLogoUrl] ?? selectedCompanyLogoUrl;
@@ -1908,6 +2392,7 @@ function ProtectedExpenseEditor({
           exportCopy={exportCopy}
           exportLanguage={exportLanguage}
           pageIndex={pageIndex}
+          receiptPreviewUrlMap={receiptPreviewUrlMap}
           totalPages={receiptPages.length}
         />
       ),
@@ -2036,6 +2521,7 @@ function ProtectedExpenseEditor({
       return;
     }
 
+    setReceiptUploadIssue(null);
     let nextReceipts: ReceiptDraft[];
 
     try {
@@ -2043,7 +2529,15 @@ function ProtectedExpenseEditor({
       setSaveError(null);
       setPrintError(null);
     } catch (error) {
-      setSaveError(getFriendlyEditorError(error, "receipt"));
+      const uploadIssue = getReceiptUploadIssue(error);
+
+      if (uploadIssue) {
+        setSaveError(null);
+        setReceiptUploadIssue(uploadIssue);
+      } else {
+        setSaveError(getFriendlyEditorError(error, "receipt"));
+      }
+
       return;
     }
 
@@ -2124,8 +2618,19 @@ function ProtectedExpenseEditor({
 
     try {
       await ensurePersistedExpenseCode();
+      const resolvedReceiptPreviewUrlMap = await ensureReceiptPreviewsReady(
+        printableReceipts.map((entry) => entry.receipt),
+      );
+      const assetUrlsForExport = [
+        selectedCompanyLogoUrl,
+        ...printableReceipts.map(
+          (entry) =>
+            resolvedReceiptPreviewUrlMap[entry.receipt.id] ??
+            getReceiptRenderablePreviewUrl(entry.receipt, receiptPreviewUrlMapRef.current),
+        ),
+      ].filter(Boolean);
 
-      const preparedExportAssets = await buildExportAssetUrlMap(printableAssetUrls);
+      const preparedExportAssets = await buildExportAssetUrlMap(assetUrlsForExport);
 
       for (const objectUrl of exportAssetObjectUrlsRef.current) {
         URL.revokeObjectURL(objectUrl);
@@ -2189,6 +2694,7 @@ function ProtectedExpenseEditor({
         exportLanguage,
         note,
         printableFormPages,
+        receiptPreviewUrlMap: receiptPreviewUrlMapRef.current,
         receiptPages,
         selectedCompanyLogoUrl: exportSelectedCompanyLogoUrl,
         selectedCompanyName,
@@ -2287,7 +2793,8 @@ function ProtectedExpenseEditor({
                       {formatDisplayDate(expenseDate)}
                     </CardTitle>
                     <CardDescription className="max-w-3xl text-sm leading-7 sm:text-base">
-                      Add each expense for this day, attach one or more receipt photos,
+                      Add each expense for this day, attach receipt images or a one-page
+                      PDF invoice,
                       then export a clean PDF with extra receipt pages.
                     </CardDescription>
                   </div>
@@ -2394,7 +2901,7 @@ function ProtectedExpenseEditor({
                     </CardTitle>
                     <CardDescription className="text-sm leading-7 sm:text-base">
                       Expand any row to update the details, attach more than one receipt
-                      photo, or remove a photo before export.
+                      file, or remove a file before export.
                     </CardDescription>
                   </div>
 
@@ -2416,7 +2923,7 @@ function ProtectedExpenseEditor({
                     </p>
                     <p className="mx-auto mt-3 max-w-md text-sm leading-7 text-muted-foreground">
                       Add your first line item to record the amount, a short note, and
-                      any receipt photos for this date.
+                      any receipt files for this date.
                     </p>
                   </div>
                 ) : (
@@ -2424,7 +2931,7 @@ function ProtectedExpenseEditor({
                     <div className="rounded-[1.6rem] border border-white/10 bg-background/55 px-4 py-3">
                       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                         <Badge className="rounded-full px-3 py-1" variant="outline">
-                          Adds multiple receipt photos
+                          Supports images and one-page PDFs
                         </Badge>
                         <Badge className="rounded-full px-3 py-1" variant="outline">
                           Saves automatically
@@ -2463,7 +2970,7 @@ function ProtectedExpenseEditor({
                                 </Badge>
                                 {row.receipts.length > 0 ? (
                                   <Badge className="rounded-full px-3 py-1" variant="outline">
-                                    {row.receipts.length} photo
+                                    {row.receipts.length} file
                                     {row.receipts.length === 1 ? "" : "s"}
                                   </Badge>
                                 ) : null}
@@ -2558,15 +3065,15 @@ function ProtectedExpenseEditor({
                                     size="sm"
                                     variant="outline"
                                   >
-                                    <label className="cursor-pointer">
+                                  <label className="cursor-pointer">
                                       <ImagePlus className="size-4" />
                                       {row.receipts.length > 0
-                                        ? "Add more receipt photos"
-                                        : "Add receipt photos"}
+                                        ? "Add more receipt files"
+                                        : "Add receipt files"}
                                       <input
                                         className="hidden"
                                         type="file"
-                                        accept="image/*"
+                                        accept="image/*,application/pdf,.pdf"
                                         multiple
                                         onChange={(event) => {
                                           void handleReceiptChange(row.id, event.target.files);
@@ -2584,7 +3091,7 @@ function ProtectedExpenseEditor({
                                       variant="ghost"
                                       onClick={() => toggleReceiptPreview(row.id)}
                                     >
-                                      {row.isReceiptPreviewOpen ? "Hide photos" : "Show photos"} (
+                                      {row.isReceiptPreviewOpen ? "Hide files" : "Show files"} (
                                       {row.receipts.length})
                                     </Button>
                                   ) : null}
@@ -2602,12 +3109,14 @@ function ProtectedExpenseEditor({
                                 </div>
 
                                 <p className="mt-3 text-sm text-muted-foreground">
-                                  You can keep more than one photo on the same expense line.
+                                  You can keep more than one receipt file on the same expense
+                                  line, including a one-page PDF invoice.
                                 </p>
                               </div>
 
                               {row.receipts.length > 0 && row.isReceiptPreviewOpen ? (
                                 <ReceiptPreviewGrid
+                                  receiptPreviewUrlMap={receiptPreviewUrlMap}
                                   receipts={row.receipts}
                                   rowReference={rowReference}
                                   onRemoveReceipt={(receipt) =>
@@ -2791,7 +3300,7 @@ function ProtectedExpenseEditor({
                   <CardDescription className="text-sm leading-7">
                     {populatedRows.length} filled expense line
                     {populatedRows.length === 1 ? "" : "s"} with {totalReceipts} receipt
-                    photo{totalReceipts === 1 ? "" : "s"} attached.
+                    file{totalReceipts === 1 ? "" : "s"} attached.
                   </CardDescription>
                 </CardHeader>
 
@@ -2819,7 +3328,7 @@ function ProtectedExpenseEditor({
                     </p>
                     <p className="mt-2 text-sm text-foreground">
                       {isPreparingPrint
-                        ? "Preparing your receipt photos for PDF..."
+                        ? "Preparing your receipt files for PDF..."
                         : lastPrintedAt
                           ? `Last exported ${lastPrintedAt}`
                           : "No PDF exported yet"}
@@ -2836,7 +3345,7 @@ function ProtectedExpenseEditor({
                       </span>
                       <p className="text-sm leading-7 text-foreground">
                         The PDF fits up to fifteen expense lines per page, keeps the same
-                        layout on continuation pages, and adds up to four receipt photos
+                        layout on continuation pages, and adds up to four receipt files
                         on each extra page.
                       </p>
                     </div>
@@ -2995,7 +3504,7 @@ function ProtectedExpenseEditor({
                 Preparing your export
               </p>
               <p className="mt-3 text-sm leading-7 text-muted-foreground">
-                We&apos;re loading the receipt photos first so they appear properly in the
+                We&apos;re loading the receipt files first so they appear properly in the
                 exported file.
               </p>
               <div className="mt-6 flex items-center justify-center gap-2">
@@ -3012,6 +3521,42 @@ function ProtectedExpenseEditor({
         ) : null}
 
         <AlertDialog
+          open={receiptUploadIssue !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setReceiptUploadIssue(null);
+            }
+          }}
+        >
+          <AlertDialogContent className="rounded-[1.9rem] border-border/60 p-0 sm:max-w-lg">
+            <div className="border-b border-border/60 bg-[linear-gradient(145deg,rgba(239,68,68,0.14),rgba(239,68,68,0.04))] px-6 py-6">
+              <div className="flex items-start gap-4">
+                <div className="flex size-12 shrink-0 items-center justify-center rounded-full border border-destructive/20 bg-destructive/10 text-destructive">
+                  <CircleAlert className="size-5" />
+                </div>
+                <div className="min-w-0">
+                  <AlertDialogTitle className="font-serif text-2xl tracking-tight text-foreground">
+                    {receiptUploadIssue?.title}
+                  </AlertDialogTitle>
+                  <AlertDialogDescription className="mt-2 text-sm leading-7 text-foreground/80">
+                    {receiptUploadIssue?.description}
+                  </AlertDialogDescription>
+                </div>
+              </div>
+            </div>
+
+            <AlertDialogFooter className="border-t border-border/60 bg-background/80 px-6 py-4">
+              <AlertDialogAction
+                className="rounded-full px-5"
+                onClick={() => setReceiptUploadIssue(null)}
+              >
+                Understood
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog
           open={pendingRemoval !== null}
           onOpenChange={(open) => {
             if (!open) {
@@ -3023,14 +3568,14 @@ function ProtectedExpenseEditor({
             <AlertDialogHeader>
               <AlertDialogTitle>
                 {pendingRemoval?.kind === "receipt"
-                  ? "Remove this receipt photo?"
+                  ? "Remove this receipt file?"
                   : "Remove this expense row?"}
               </AlertDialogTitle>
               <AlertDialogDescription className="leading-7">
                 {pendingRemoval?.kind === "receipt"
                   ? `This will remove "${pendingRemoval.receiptName}" from ${pendingRemoval.rowReference}.`
                   : pendingRemoval
-                    ? `This will remove ${pendingRemoval.rowReference} and all of its receipt photos.`
+                    ? `This will remove ${pendingRemoval.rowReference} and all of its receipt files.`
                     : "This action cannot be undone on this page."}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -3190,8 +3735,8 @@ function PrintExpenseFormPage({
                   </p>
                 </div>
                 <div className="border-r border-b border-black/25 px-2 py-1.5">
-                  <p className="line-clamp-2 leading-[1rem] text-black/78">
-                    {row.remark || exportCopy.emptyRemark}
+                  <p className="leading-[1rem] whitespace-pre-line text-black/78 [overflow-wrap:anywhere]">
+                    {getNormalizedExportRemark(row.remark, exportCopy.emptyRemark)}
                   </p>
                 </div>
                 <div className="border-b border-black/25 px-2 py-1.5 text-right font-medium">
@@ -3235,6 +3780,7 @@ function ReceiptExportPage({
   exportCopy,
   exportLanguage,
   pageIndex,
+  receiptPreviewUrlMap,
   totalPages,
 }: {
   assetUrlMap: Record<string, string>;
@@ -3242,6 +3788,7 @@ function ReceiptExportPage({
   exportCopy: ExportCopy;
   exportLanguage: ExportLanguage;
   pageIndex: number;
+  receiptPreviewUrlMap: Record<string, string>;
   totalPages: number;
 }) {
   return (
@@ -3259,7 +3806,8 @@ function ReceiptExportPage({
         <div className="mt-3 grid grid-cols-2 gap-3">
           {entries.map((entry) => {
             const receiptPreviewUrl =
-              assetUrlMap[entry.receipt.previewUrl] ?? entry.receipt.previewUrl;
+              assetUrlMap[getReceiptRenderablePreviewUrl(entry.receipt, receiptPreviewUrlMap)] ??
+              getReceiptRenderablePreviewUrl(entry.receipt, receiptPreviewUrlMap);
 
             return (
               <article className="p-0" key={entry.key}>
@@ -3384,7 +3932,7 @@ function LoadingExpenseDayState() {
               Getting your expenses ready
             </p>
             <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-muted-foreground">
-              We&apos;re loading your saved rows, receipt photos, and company details for
+              We&apos;re loading your saved rows, receipt files, and company details for
               this day.
             </p>
           </div>
@@ -3471,10 +4019,12 @@ function InfoLine({
 
 function ReceiptPreviewGrid({
   onRemoveReceipt,
+  receiptPreviewUrlMap,
   receipts,
   rowReference,
 }: {
   onRemoveReceipt: (receipt: ReceiptDraft) => void;
+  receiptPreviewUrlMap: Record<string, string>;
   receipts: ReceiptDraft[];
   rowReference: string;
 }) {
@@ -3482,49 +4032,65 @@ function ReceiptPreviewGrid({
     <div className="rounded-[1.6rem] border border-white/10 bg-background/60 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-sm font-medium text-foreground">Receipt photos for {rowReference}</p>
+          <p className="text-sm font-medium text-foreground">Receipt files for {rowReference}</p>
           <p className="text-xs text-muted-foreground">
-            Remove any photo you no longer want on the export.
+            Remove any file you no longer want on the export.
           </p>
         </div>
         <Badge className="rounded-full px-3 py-1" variant="outline">
-          {receipts.length} photo{receipts.length === 1 ? "" : "s"}
+          {receipts.length} file{receipts.length === 1 ? "" : "s"}
         </Badge>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        {receipts.map((receipt) => (
-          <div
-            className="overflow-hidden rounded-[1.4rem] border border-white/10 bg-background/85"
-            key={receipt.id}
-          >
-            <div className="relative border-b border-white/10 bg-black/5">
-              {/* eslint-disable-next-line @next/next/no-img-element -- preview cards use raw urls/data urls and should render immediately. */}
-              <img
-                alt={receipt.name}
-                className="h-40 w-full object-cover"
-                decoding="async"
-                loading="lazy"
-                src={receipt.previewUrl}
-              />
-              <Button
-                className="absolute right-3 top-3 rounded-full border-white/15 bg-background/85 shadow-lg backdrop-blur"
-                size="icon-xs"
-                type="button"
-                variant="secondary"
-                onClick={() => onRemoveReceipt(receipt)}
-              >
-                <X className="size-3.5" />
-                <span className="sr-only">Remove receipt photo</span>
-              </Button>
-            </div>
+        {receipts.map((receipt) => {
+          const receiptPreviewUrl = getReceiptRenderablePreviewUrl(receipt, receiptPreviewUrlMap);
 
-            <div className="p-3">
-              <p className="truncate text-sm font-medium text-foreground">{receipt.name}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{receipt.sizeLabel}</p>
+          return (
+            <div
+              className="overflow-hidden rounded-[1.4rem] border border-white/10 bg-background/85"
+              key={receipt.id}
+            >
+              <div className="relative border-b border-white/10 bg-black/5">
+                {receiptPreviewUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- preview cards use raw urls/data urls and should render immediately.
+                  <img
+                    alt={receipt.name}
+                    className="h-40 w-full object-cover"
+                    decoding="async"
+                    loading="lazy"
+                    src={receiptPreviewUrl}
+                  />
+                ) : (
+                  <div className="flex h-40 w-full flex-col items-center justify-center gap-2 bg-[linear-gradient(180deg,rgba(15,23,42,0.05),rgba(15,23,42,0.02))] px-4 text-center">
+                    <FileText className="size-8 text-muted-foreground" />
+                    <p className="text-xs font-medium text-foreground">
+                      Preparing the first page preview
+                    </p>
+                  </div>
+                )}
+                <Button
+                  className="absolute right-3 top-3 rounded-full border-white/15 bg-background/85 shadow-lg backdrop-blur"
+                  size="icon-xs"
+                  type="button"
+                  variant="secondary"
+                  onClick={() => onRemoveReceipt(receipt)}
+                >
+                  <X className="size-3.5" />
+                  <span className="sr-only">Remove receipt file</span>
+                </Button>
+              </div>
+
+              <div className="p-3">
+                <p className="truncate text-sm font-medium text-foreground">{receipt.name}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{receipt.sizeLabel}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {isPdfReceipt(receipt) ? "PDF invoice" : "Image receipt"}
+                </p>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
