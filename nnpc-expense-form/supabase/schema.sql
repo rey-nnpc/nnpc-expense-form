@@ -192,10 +192,12 @@ create or replace function public.upsert_expense_day(
   p_expense_date date,
   p_company_id uuid,
   p_company_name text,
+  p_company_tax_id text,
   p_company_logo_bucket_name text,
   p_company_logo_object_path text,
   p_export_language text,
   p_employee_name text,
+  p_department text,
   p_note text,
   p_items jsonb
 )
@@ -227,10 +229,12 @@ begin
     expense_date,
     company_id,
     company_name,
+    company_tax_id,
     company_logo_bucket_name,
     company_logo_object_path,
     export_language,
     employee_name,
+    department,
     note
   )
   values (
@@ -238,20 +242,24 @@ begin
     p_expense_date,
     p_company_id,
     p_company_name,
+    p_company_tax_id,
     p_company_logo_bucket_name,
     p_company_logo_object_path,
     coalesce(nullif(p_export_language, ''), 'en'),
     p_employee_name,
+    p_department,
     p_note
   )
   on conflict (user_id, expense_date) do update
   set
     company_id = excluded.company_id,
     company_name = excluded.company_name,
+    company_tax_id = excluded.company_tax_id,
     company_logo_bucket_name = excluded.company_logo_bucket_name,
     company_logo_object_path = excluded.company_logo_object_path,
     export_language = excluded.export_language,
     employee_name = excluded.employee_name,
+    department = excluded.department,
     note = excluded.note,
     updated_at = timezone('utc', now())
   returning id, expense_code into v_report_id, v_expense_code;
@@ -967,6 +975,7 @@ create table if not exists public.user_companies (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   company_name text not null check (length(trim(company_name)) > 0),
+  company_tax_id text,
   logo_data_url text,
   logo_bucket_name text default 'company-assets',
   logo_object_path text,
@@ -994,6 +1003,7 @@ create table if not exists public.expense_reports (
   expense_date date not null,
   company_id uuid references public.user_companies (id) on delete set null,
   company_name text,
+  company_tax_id text,
   company_logo_data_url text,
   company_logo_bucket_name text,
   company_logo_object_path text,

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState, type ChangeEvent } from "react";
-import { Building2, LogOut, Plus } from "lucide-react";
+import { Building2, LogOut, PencilLine, Plus } from "lucide-react";
 import AuthGate, { type AuthSession } from "@/components/auth-gate";
 import { ThemeSettingsSheet } from "@/components/theme-settings-sheet";
 import { TopRouteTabs } from "@/components/top-route-tabs";
@@ -14,12 +14,21 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { readCompaniesCache, writeCompaniesCache } from "@/lib/browser-cache";
 import {
   SESSION_EXPIRED_MESSAGE,
   createUserCompany,
   listUserCompanies,
+  updateUserCompany,
   type CompanyRecord,
 } from "@/lib/company-data";
 import { type UserAccount } from "@/lib/user-account-data";
@@ -72,11 +81,19 @@ function ProtectedCompanySettings({
   const cacheUserKey = session.userEmail;
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [companyNameDraft, setCompanyNameDraft] = useState("");
+  const [companyTaxIdDraft, setCompanyTaxIdDraft] = useState("");
   const [companyLogoFile, setCompanyLogoFile] = useState<File | null>(null);
   const [companyLogoDraft, setCompanyLogoDraft] = useState("");
   const [companyMessage, setCompanyMessage] = useState<CompanyMessage | null>(null);
   const [isLoadingCompanies, setIsLoadingCompanies] = useState(true);
   const [isSavingCompany, setIsSavingCompany] = useState(false);
+  const [editingCompany, setEditingCompany] = useState<CompanyRecord | null>(null);
+  const [editCompanyNameDraft, setEditCompanyNameDraft] = useState("");
+  const [editCompanyTaxIdDraft, setEditCompanyTaxIdDraft] = useState("");
+  const [editCompanyLogoFile, setEditCompanyLogoFile] = useState<File | null>(null);
+  const [editCompanyLogoDraft, setEditCompanyLogoDraft] = useState("");
+  const [editCompanyMessage, setEditCompanyMessage] = useState<CompanyMessage | null>(null);
+  const [isUpdatingCompany, setIsUpdatingCompany] = useState(false);
 
   useEffect(() => {
     let isActive = true;
@@ -153,7 +170,56 @@ function ProtectedCompanySettings({
         tone: "error",
         text: "The selected logo could not be read.",
       });
+    } finally {
+      event.target.value = "";
     }
+  };
+
+  const resetEditCompanyState = () => {
+    setEditingCompany(null);
+    setEditCompanyNameDraft("");
+    setEditCompanyTaxIdDraft("");
+    setEditCompanyLogoFile(null);
+    setEditCompanyLogoDraft("");
+    setEditCompanyMessage(null);
+  };
+
+  const openEditCompany = (company: CompanyRecord) => {
+    setEditingCompany(company);
+    setEditCompanyNameDraft(company.companyName);
+    setEditCompanyTaxIdDraft(company.companyTaxId);
+    setEditCompanyLogoFile(null);
+    setEditCompanyLogoDraft(company.logoUrl);
+    setEditCompanyMessage(null);
+    setCompanyMessage(null);
+  };
+
+  const handleEditCompanyLogoChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const [file] = Array.from(event.target.files ?? []);
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const nextLogoDraft = await readCompanyLogoAsDataUrl(file);
+      setEditCompanyLogoFile(file);
+      setEditCompanyLogoDraft(nextLogoDraft);
+      setEditCompanyMessage(null);
+    } catch {
+      setEditCompanyMessage({
+        tone: "error",
+        text: "The replacement logo could not be read.",
+      });
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const resetEditCompanyLogo = () => {
+    setEditCompanyLogoFile(null);
+    setEditCompanyLogoDraft(editingCompany?.logoUrl ?? "");
+    setEditCompanyMessage(null);
   };
 
   const handleSaveCompany = async () => {
@@ -180,6 +246,7 @@ function ProtectedCompanySettings({
       const savedCompany = await createUserCompany({
         accessToken: session.accessToken,
         companyName: companyNameDraft,
+        companyTaxId: companyTaxIdDraft,
         logoFile: companyLogoFile,
       });
 
@@ -189,6 +256,7 @@ function ProtectedCompanySettings({
         return nextCompanies;
       });
       setCompanyNameDraft("");
+      setCompanyTaxIdDraft("");
       setCompanyLogoFile(null);
       setCompanyLogoDraft("");
       setCompanyMessage({
@@ -210,6 +278,64 @@ function ProtectedCompanySettings({
       });
     } finally {
       setIsSavingCompany(false);
+    }
+  };
+
+  const handleUpdateCompany = async () => {
+    if (!editingCompany) {
+      return;
+    }
+
+    if (!editCompanyNameDraft.trim()) {
+      setEditCompanyMessage({
+        tone: "error",
+        text: "Company name is required.",
+      });
+      return;
+    }
+
+    setIsUpdatingCompany(true);
+    setEditCompanyMessage(null);
+
+    try {
+      const savedCompany = await updateUserCompany({
+        accessToken: session.accessToken,
+        companyId: editingCompany.id,
+        companyName: editCompanyNameDraft,
+        companyTaxId: editCompanyTaxIdDraft,
+        currentCompany: editingCompany,
+        logoFile: editCompanyLogoFile,
+      });
+
+      setCompanies((currentCompanies) => {
+        const nextCompanies = currentCompanies.map((company) =>
+          company.id === savedCompany.id ? savedCompany : company,
+        );
+
+        writeCompaniesCache(cacheUserKey, nextCompanies);
+        return nextCompanies;
+      });
+
+      setCompanyMessage({
+        tone: "info",
+        text: `${savedCompany.companyName} updated.`,
+      });
+      resetEditCompanyState();
+    } catch (error) {
+      if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+        void logout();
+        return;
+      }
+
+      setEditCompanyMessage({
+        tone: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "The company could not be updated in Supabase.",
+      });
+    } finally {
+      setIsUpdatingCompany(false);
     }
   };
 
@@ -254,8 +380,8 @@ function ProtectedCompanySettings({
                     Library
                   </CardTitle>
                   <CardDescription className="mt-1 max-w-2xl text-sm leading-7">
-                    Save reusable company names and logos once, then select them from
-                    each day sheet before export.
+                    Save reusable company names and logos once, then edit or reuse them
+                    from each day sheet before export.
                   </CardDescription>
                 </div>
 
@@ -279,27 +405,47 @@ function ProtectedCompanySettings({
                 <div className="grid gap-3 md:grid-cols-2">
                   {companies.map((company) => (
                     <article
-                      className="flex items-center gap-4 rounded-[1.5rem] border border-white/10 bg-background/65 p-4"
+                      className="flex flex-col gap-4 rounded-[1.5rem] border border-white/10 bg-background/65 p-4 sm:flex-row sm:items-center sm:justify-between"
                       key={company.id}
                     >
-                      <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-background/85">
-                        <Image
-                          alt={company.companyName}
-                          className="h-full w-full object-contain"
-                          height={128}
-                          src={company.logoUrl}
-                          unoptimized
-                          width={128}
-                        />
+                      <div className="flex min-w-0 items-center gap-4">
+                        <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-background/85">
+                          <Image
+                            alt={company.companyName}
+                            className="h-full w-full object-contain"
+                            height={128}
+                            src={company.logoUrl}
+                            unoptimized
+                            width={128}
+                          />
+                        </div>
+
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-foreground">
+                            {company.companyName}
+                          </p>
+                          {company.companyTaxId ? (
+                            <p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                              Tax ID {company.companyTaxId}
+                            </p>
+                          ) : null}
+                          <p className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                            Export ready
+                          </p>
+                        </div>
                       </div>
 
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-foreground">
-                          {company.companyName}
-                        </p>
-                        <p className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                          Export ready
-                        </p>
+                      <div className="flex items-center justify-end">
+                        <Button
+                          className="rounded-full px-4"
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                          onClick={() => openEditCompany(company)}
+                        >
+                          <PencilLine className="size-4" />
+                          Edit
+                        </Button>
                       </div>
                     </article>
                   ))}
@@ -329,6 +475,17 @@ function ProtectedCompanySettings({
                     type="text"
                     value={companyNameDraft}
                     onChange={(event) => setCompanyNameDraft(event.target.value)}
+                  />
+                </label>
+
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-foreground">Company Tax ID</span>
+                  <Input
+                    className="h-11 rounded-2xl border-white/10 bg-background/75 px-4"
+                    placeholder="0105539123456"
+                    type="text"
+                    value={companyTaxIdDraft}
+                    onChange={(event) => setCompanyTaxIdDraft(event.target.value)}
                   />
                 </label>
 
@@ -395,6 +552,11 @@ function ProtectedCompanySettings({
                     <p className="text-sm font-medium text-foreground">
                       {companyNameDraft || "Your saved company name appears here"}
                     </p>
+                    {companyTaxIdDraft ? (
+                      <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Tax ID {companyTaxIdDraft}
+                      </p>
+                    ) : null}
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">
                       This exact header is printed on the export form.
                     </p>
@@ -405,6 +567,163 @@ function ProtectedCompanySettings({
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={editingCompany !== null}
+        onOpenChange={(open) => {
+          if (!open && !isUpdatingCompany) {
+            resetEditCompanyState();
+          }
+        }}
+      >
+        <DialogContent
+          className="rounded-[2rem] border-border/60 p-0 sm:max-w-[44rem]"
+          showCloseButton={!isUpdatingCompany}
+          onInteractOutside={(event) => {
+            if (isUpdatingCompany) {
+              event.preventDefault();
+            }
+          }}
+        >
+          <DialogHeader className="gap-3 border-b border-border/60 px-6 py-5">
+            <BadgeLike label="Saved header" />
+            <DialogTitle className="font-serif text-3xl tracking-tight">
+              Edit company
+            </DialogTitle>
+            <DialogDescription className="max-w-2xl text-sm leading-7">
+              Update the saved company name, tax ID, or replace the logo. The
+              changes will be available in the export selector right away.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-6 px-6 py-6 md:grid-cols-[minmax(0,1.1fr)_15rem]">
+            <div className="space-y-5">
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-foreground">Company name</span>
+                <Input
+                  className="h-11 rounded-2xl border-white/10 bg-background/75 px-4"
+                  placeholder="NNPC Consulting Company Limited"
+                  type="text"
+                  value={editCompanyNameDraft}
+                  onChange={(event) => setEditCompanyNameDraft(event.target.value)}
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-foreground">Company Tax ID</span>
+                <Input
+                  className="h-11 rounded-2xl border-white/10 bg-background/75 px-4"
+                  placeholder="0105539123456"
+                  type="text"
+                  value={editCompanyTaxIdDraft}
+                  onChange={(event) => setEditCompanyTaxIdDraft(event.target.value)}
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-foreground">Replace company logo</span>
+                <Input
+                  className="h-12 rounded-2xl border-white/10 bg-background/75 px-4 file:mr-4 file:rounded-full file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary-foreground"
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    void handleEditCompanyLogoChange(event);
+                  }}
+                />
+              </label>
+
+              {editCompanyLogoFile ? (
+                <div className="flex justify-start">
+                  <Button
+                    className="rounded-full px-4"
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                    onClick={resetEditCompanyLogo}
+                  >
+                    Keep current logo
+                  </Button>
+                </div>
+              ) : null}
+
+              {editCompanyMessage ? (
+                <div
+                  className={`rounded-3xl border px-4 py-3 text-sm ${
+                    editCompanyMessage.tone === "error"
+                      ? "border-destructive/30 bg-destructive/10 text-destructive"
+                      : "border-primary/20 bg-primary/10 text-foreground"
+                  }`}
+                >
+                  {editCompanyMessage.text}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-[1.75rem] border border-white/10 bg-background/60 p-4">
+              <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
+                Updated preview
+              </p>
+              <div className="mt-4 flex flex-col items-center text-center">
+                <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-background/85">
+                  {editCompanyLogoDraft ? (
+                    <Image
+                      alt={editCompanyNameDraft || "Company logo preview"}
+                      className="h-full w-full object-contain"
+                      height={192}
+                      src={editCompanyLogoDraft}
+                      unoptimized
+                      width={192}
+                    />
+                  ) : (
+                    <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+                      Logo
+                    </span>
+                  )}
+                </div>
+
+                <p className="mt-4 text-sm font-medium text-foreground">
+                  {editCompanyNameDraft || "Company name"}
+                </p>
+                {editCompanyTaxIdDraft ? (
+                  <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                    Tax ID {editCompanyTaxIdDraft}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                    No tax ID saved
+                  </p>
+                )}
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                  This header will show anywhere the saved company is reused for export.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="border-t border-border/60 px-6 py-5">
+            <Button
+              className="rounded-full"
+              disabled={isUpdatingCompany}
+              type="button"
+              variant="outline"
+              onClick={resetEditCompanyState}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="rounded-full px-5"
+              disabled={isUpdatingCompany}
+              type="button"
+              onClick={() => {
+                void handleUpdateCompany();
+              }}
+            >
+              <PencilLine className="size-4" />
+              {isUpdatingCompany ? "Saving changes..." : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
