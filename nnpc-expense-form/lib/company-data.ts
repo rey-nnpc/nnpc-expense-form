@@ -10,6 +10,7 @@ import {
 
 export type CompanyRecord = {
   id: string;
+  companyAddress: string;
   companyName: string;
   companyTaxId: string;
   logoUrl: string;
@@ -21,6 +22,7 @@ export type CompanyRecord = {
 
 type CompanyRow = {
   id: string;
+  company_address: string | null;
   company_name: string;
   company_tax_id: string | null;
   logo_data_url: string | null;
@@ -36,6 +38,7 @@ function mapCompanyRow(row: CompanyRow): CompanyRecord {
 
   return {
     id: row.id,
+    companyAddress: row.company_address ?? "",
     companyName: row.company_name,
     companyTaxId: row.company_tax_id ?? "",
     logoUrl:
@@ -54,7 +57,7 @@ export { SESSION_EXPIRED_MESSAGE };
 export async function listUserCompanies(accessToken: string) {
   const rows = await supabaseJsonRequest<CompanyRow[]>({
     accessToken,
-    path: "user_companies?select=id,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at&order=created_at.desc",
+    path: "user_companies?select=id,company_address,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at&order=created_at.desc",
   });
 
   return rows.map(mapCompanyRow);
@@ -62,11 +65,13 @@ export async function listUserCompanies(accessToken: string) {
 
 export async function createUserCompany({
   accessToken,
+  companyAddress,
   companyName,
   companyTaxId,
   logoFile,
 }: {
   accessToken: string;
+  companyAddress: string;
   companyName: string;
   companyTaxId: string;
   logoFile: File;
@@ -89,6 +94,7 @@ export async function createUserCompany({
     accessToken,
     body: [
       {
+        company_address: companyAddress.trim() || null,
         company_name: companyName.trim(),
         company_tax_id: companyTaxId.trim() || null,
         logo_data_url: null,
@@ -101,7 +107,7 @@ export async function createUserCompany({
       Prefer: "return=representation",
     },
     method: "POST",
-    path: "user_companies?select=id,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at",
+    path: "user_companies?select=id,company_address,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at",
   });
 
   const [firstRow] = rows;
@@ -115,6 +121,7 @@ export async function createUserCompany({
 
 export async function updateUserCompany({
   accessToken,
+  companyAddress,
   companyId,
   companyName,
   companyTaxId,
@@ -122,6 +129,7 @@ export async function updateUserCompany({
   logoFile,
 }: {
   accessToken: string;
+  companyAddress: string;
   companyId: string;
   companyName: string;
   companyTaxId: string;
@@ -135,6 +143,7 @@ export async function updateUserCompany({
 
   try {
     const nextBody: Record<string, string | null> = {
+      company_address: companyAddress.trim() || null,
       company_name: companyName.trim(),
       company_tax_id: companyTaxId.trim() || null,
     };
@@ -167,7 +176,7 @@ export async function updateUserCompany({
         Prefer: "return=representation",
       },
       method: "PATCH",
-      path: `user_companies?id=eq.${encodeURIComponent(companyId)}&select=id,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at`,
+      path: `user_companies?id=eq.${encodeURIComponent(companyId)}&select=id,company_address,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at`,
     });
 
     const [firstRow] = rows;

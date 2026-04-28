@@ -191,6 +191,7 @@ $$;
 create or replace function public.upsert_expense_day(
   p_expense_date date,
   p_company_id uuid,
+  p_company_address text,
   p_company_name text,
   p_company_tax_id text,
   p_company_logo_bucket_name text,
@@ -228,6 +229,7 @@ begin
     user_id,
     expense_date,
     company_id,
+    company_address,
     company_name,
     company_tax_id,
     company_logo_bucket_name,
@@ -241,6 +243,7 @@ begin
     auth.uid(),
     p_expense_date,
     p_company_id,
+    p_company_address,
     p_company_name,
     p_company_tax_id,
     p_company_logo_bucket_name,
@@ -253,6 +256,7 @@ begin
   on conflict (user_id, expense_date) do update
   set
     company_id = excluded.company_id,
+    company_address = excluded.company_address,
     company_name = excluded.company_name,
     company_tax_id = excluded.company_tax_id,
     company_logo_bucket_name = excluded.company_logo_bucket_name,
@@ -974,6 +978,7 @@ create table if not exists public.user_accounts (
 create table if not exists public.user_companies (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  company_address text,
   company_name text not null check (length(trim(company_name)) > 0),
   company_tax_id text,
   logo_data_url text,
@@ -1002,6 +1007,7 @@ create table if not exists public.expense_reports (
   expense_code text not null,
   expense_date date not null,
   company_id uuid references public.user_companies (id) on delete set null,
+  company_address text,
   company_name text,
   company_tax_id text,
   company_logo_data_url text,

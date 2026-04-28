@@ -285,6 +285,7 @@ type ExportAssetPreparationResult = {
 
 type ExportPdfSource = {
   assetUrlMap: Record<string, string>;
+  companyAddress: string;
   companyTaxId: string;
   department: string;
   displayExpenseReference: string;
@@ -301,6 +302,7 @@ type ExportPdfSource = {
 };
 
 type PendingSaveSnapshot = {
+  companyAddress: string;
   companyId: string;
   companyLogoBucketName: string;
   companyLogoObjectPath: string;
@@ -733,6 +735,24 @@ function drawHorizontalRule(
   context.restore();
 }
 
+function getCompanyAddressHeaderWidth(address: string) {
+  const trimmedAddress = address.trim();
+
+  if (!trimmedAddress) {
+    return 0;
+  }
+
+  if (trimmedAddress.length > 110) {
+    return 224;
+  }
+
+  if (trimmedAddress.length > 64) {
+    return 196;
+  }
+
+  return 164;
+}
+
 function drawImageContain({
   context,
   height,
@@ -836,11 +856,24 @@ async function renderFormPageCanvas(
   const { canvas, context } = createExportPageCanvas();
   const contentX = EXPORT_PAGE_PADDING_PX;
   const contentWidth = EXPORT_CONTENT_WIDTH_PX;
+  const logoSize = 64;
+  const headerTextX = contentX + logoSize + 18;
+  const trimmedCompanyAddress = source.companyAddress.trim();
+  const hasCompanyAddress = Boolean(trimmedCompanyAddress);
+  const rightHeaderWidth = getCompanyAddressHeaderWidth(trimmedCompanyAddress);
+  const headerSideReserve = hasCompanyAddress
+    ? rightHeaderWidth + 24
+    : source.printableFormPages.length > 1
+      ? 156
+      : 0;
+  const headerTextMaxWidth = Math.max(
+    220,
+    contentX + contentWidth - headerTextX - headerSideReserve,
+  );
   const infoGap = 20;
   const leftInfoWidth = (contentWidth - infoGap) * 0.4;
   const rightInfoWidth = contentWidth - infoGap - leftInfoWidth;
   const rightInfoX = contentX + leftInfoWidth + infoGap;
-  const logoSize = 64;
   let y = EXPORT_PAGE_PADDING_PX;
 
   if (source.selectedCompanyLogoUrl) {
@@ -871,15 +904,13 @@ async function renderFormPageCanvas(
     }
   }
 
-  const headerTextX = contentX + logoSize + 18;
-
   drawTextBlock({
     color: "rgba(0,0,0,0.55)",
     context,
     font: "600 10px Arial, sans-serif",
     lineHeight: 11,
     maxLines: 1,
-    maxWidth: contentWidth - logoSize - 120,
+    maxWidth: headerTextMaxWidth,
     text: source.exportCopy.companyCaption.toUpperCase(),
     x: headerTextX,
     y,
@@ -890,7 +921,7 @@ async function renderFormPageCanvas(
     font: "600 28px Georgia, 'Times New Roman', serif",
     lineHeight: 24,
     maxLines: 2,
-    maxWidth: contentWidth - logoSize - 120,
+    maxWidth: headerTextMaxWidth,
     text: source.selectedCompanyName || source.exportCopy.companyPending,
     x: headerTextX,
     y: y + 16,
@@ -903,7 +934,7 @@ async function renderFormPageCanvas(
         font: "700 10px Arial, sans-serif",
         lineHeight: 12,
         maxLines: 1,
-        maxWidth: contentWidth - logoSize - 120,
+        maxWidth: headerTextMaxWidth,
         text: `${source.exportCopy.companyTaxId.toUpperCase()}: ${source.companyTaxId}`,
         x: headerTextX,
         y: y + 18 + companyNameHeight,
@@ -920,7 +951,7 @@ async function renderFormPageCanvas(
       font: "400 11px Arial, sans-serif",
       lineHeight: 13,
       maxLines: 1,
-      maxWidth: contentWidth - logoSize - 120,
+      maxWidth: headerTextMaxWidth,
       text: source.exportCopy.formSubtitle,
       x: headerTextX,
       y: subtitleY,
@@ -933,7 +964,7 @@ async function renderFormPageCanvas(
     font: "700 13px Arial, sans-serif",
     lineHeight: 14,
     maxLines: 1,
-    maxWidth: contentWidth - logoSize - 120,
+    maxWidth: headerTextMaxWidth,
     text: source.exportCopy.formTitle,
     x: headerTextX,
     y: titleY,
@@ -958,7 +989,24 @@ async function renderFormPageCanvas(
     });
   }
 
-  const headerBottom = Math.max(y + logoSize, titleY + 18);
+  const addressHeight = hasCompanyAddress
+    ? drawTextBlock({
+        align: "right",
+        color: "rgba(0,0,0,0.64)",
+        context,
+        font: "400 10px Arial, sans-serif",
+        lineHeight: 14,
+        maxLines: 5,
+        maxWidth: rightHeaderWidth,
+        text: trimmedCompanyAddress,
+        x: contentX + contentWidth - rightHeaderWidth,
+        y: y + (source.printableFormPages.length > 1 ? 18 : 4),
+      })
+    : 0;
+  const addressBottom = hasCompanyAddress
+    ? y + (source.printableFormPages.length > 1 ? 18 : 4) + addressHeight
+    : 0;
+  const headerBottom = Math.max(y + logoSize, titleY + 18, addressBottom);
   drawHorizontalRule(context, contentX, headerBottom + 10, contentWidth, "rgba(0,0,0,0.25)");
   y = headerBottom + 26;
 
@@ -1692,6 +1740,7 @@ function ProtectedExpenseEditor({
   const [employeeName, setEmployeeName] = useState(defaultEmployeeName);
   const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [loadedCompanyId, setLoadedCompanyId] = useState("");
+  const [loadedCompanyAddress, setLoadedCompanyAddress] = useState("");
   const [loadedCompanyName, setLoadedCompanyName] = useState("");
   const [loadedCompanyTaxId, setLoadedCompanyTaxId] = useState("");
   const [loadedCompanyLogoBucketName, setLoadedCompanyLogoBucketName] = useState("");
@@ -1747,6 +1796,7 @@ function ProtectedExpenseEditor({
       setEmployeeName(defaultProfileName);
       setSelectedCompanyId("");
       setLoadedCompanyId("");
+      setLoadedCompanyAddress("");
       setLoadedCompanyName("");
       setLoadedCompanyTaxId("");
       setLoadedCompanyLogoBucketName("");
@@ -1769,6 +1819,7 @@ function ProtectedExpenseEditor({
       );
       setSelectedCompanyId(hydratedDraft?.companyId ?? existingReport?.companyId ?? "");
       setLoadedCompanyId(existingReport?.companyId ?? "");
+      setLoadedCompanyAddress(existingReport?.companyAddress ?? "");
       setLoadedCompanyName(existingReport?.companyName ?? "");
       setLoadedCompanyTaxId(existingReport?.companyTaxId ?? "");
       setLoadedCompanyLogoBucketName(existingReport?.companyLogoBucketName ?? "");
@@ -1884,6 +1935,9 @@ function ProtectedExpenseEditor({
   const selectedCompanyName =
     selectedCompany?.companyName ??
     (shouldUseLoadedCompanySnapshot ? loadedCompanyName : "");
+  const selectedCompanyAddress =
+    selectedCompany?.companyAddress ??
+    (shouldUseLoadedCompanySnapshot ? loadedCompanyAddress : "");
   const selectedCompanyTaxId =
     selectedCompany?.companyTaxId ??
     (shouldUseLoadedCompanySnapshot ? loadedCompanyTaxId : "");
@@ -1898,6 +1952,7 @@ function ProtectedExpenseEditor({
 
   const buildPendingSaveSnapshot = () =>
     ({
+      companyAddress: selectedCompanyAddress,
       companyId: selectedCompanyId,
       companyLogoBucketName: selectedCompanyLogoBucketName,
       companyLogoObjectPath: selectedCompanyLogoObjectPath,
@@ -1917,6 +1972,7 @@ function ProtectedExpenseEditor({
     try {
       const saveResult = await upsertExpenseDay({
         accessToken: session.accessToken,
+        companyAddress: nextSnapshot.companyAddress,
         companyId: nextSnapshot.companyId,
         companyLogoBucketName: nextSnapshot.companyLogoBucketName,
         companyLogoObjectPath: nextSnapshot.companyLogoObjectPath,
@@ -1955,6 +2011,7 @@ function ProtectedExpenseEditor({
           : "";
 
       writeExpenseDayCache(cacheUserKey, expenseDate, {
+        companyAddress: nextSnapshot.companyAddress,
         companyId: nextSnapshot.companyId,
         companyLogoBucketName: nextSnapshot.companyLogoBucketName,
         companyLogoObjectPath: nextSnapshot.companyLogoObjectPath,
@@ -2098,6 +2155,7 @@ function ProtectedExpenseEditor({
     }
 
     pendingSaveRef.current = {
+      companyAddress: selectedCompanyAddress,
       companyId: selectedCompanyId,
       companyLogoBucketName: selectedCompanyLogoBucketName,
       companyLogoObjectPath: selectedCompanyLogoObjectPath,
@@ -2131,6 +2189,7 @@ function ProtectedExpenseEditor({
     note,
     rows,
     selectedCompanyId,
+    selectedCompanyAddress,
     selectedCompanyLogoBucketName,
     selectedCompanyLogoObjectPath,
     selectedCompanyName,
@@ -2338,6 +2397,7 @@ function ProtectedExpenseEditor({
           : exportCopy.formTitle,
       node: (
         <PrintExpenseFormPage
+          companyAddress={selectedCompanyAddress}
           companyTaxId={selectedCompanyTaxId}
           currentPage={pageIndex + 1}
           department={printableDepartment}
@@ -2595,6 +2655,7 @@ function ProtectedExpenseEditor({
 
     return {
       companyTaxId: selectedCompanyTaxId,
+      companyAddress: selectedCompanyAddress,
       department: printableDepartment,
       displayExpenseReference: formatExpenseReferenceCode(expenseDate, nextExpenseCode),
       exportCopy: EXPORT_COPY[exportLanguage],
@@ -2705,6 +2766,7 @@ function ProtectedExpenseEditor({
 
       const exportBlob = await createExportPdfBlob({
         assetUrlMap: preparedAssetUrlMap,
+        companyAddress: exportArtifacts.companyAddress,
         companyTaxId: exportArtifacts.companyTaxId,
         department: exportArtifacts.department,
         displayExpenseReference: exportArtifacts.displayExpenseReference,
@@ -2767,6 +2829,7 @@ function ProtectedExpenseEditor({
           : await prepareExportAssets(exportArtifacts.printableAssetUrls);
       const exportBlob = await createExportPdfBlob({
         assetUrlMap: preparedAssetUrlMap,
+        companyAddress: exportArtifacts.companyAddress,
         companyTaxId: exportArtifacts.companyTaxId,
         department: exportArtifacts.department,
         displayExpenseReference: exportArtifacts.displayExpenseReference,
@@ -3327,7 +3390,7 @@ function ProtectedExpenseEditor({
                       </p>
                     ) : (
                       <p className="text-xs leading-6 text-muted-foreground">
-                        The selected company name and logo appear on every exported page.
+                        The selected company header appears on every exported page.
                       </p>
                     )}
                   </label>
@@ -3361,8 +3424,13 @@ function ProtectedExpenseEditor({
                             {exportCopy.companyTaxId}: {selectedCompanyTaxId}
                           </p>
                         ) : null}
+                        {selectedCompanyAddress ? (
+                          <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
+                            {selectedCompanyAddress}
+                          </p>
+                        ) : null}
                         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          The name, tax ID, and logo show in the PDF header.
+                          The name, tax ID, address, and logo show in the PDF header.
                         </p>
                       </div>
                     </div>
@@ -3775,6 +3843,7 @@ function ProtectedExpenseEditor({
 }
 
 function PrintExpenseFormPage({
+  companyAddress,
   companyTaxId,
   currentPage,
   department,
@@ -3791,6 +3860,7 @@ function PrintExpenseFormPage({
   totalAmount,
   totalPages,
 }: {
+  companyAddress: string;
   companyTaxId: string;
   currentPage: number;
   department: string;
@@ -3807,6 +3877,11 @@ function PrintExpenseFormPage({
   totalAmount: number;
   totalPages: number;
 }) {
+  const trimmedCompanyAddress = companyAddress.trim();
+  const hasCompanyAddress = Boolean(trimmedCompanyAddress);
+  const headerAddressWidth = getCompanyAddressHeaderWidth(trimmedCompanyAddress);
+  const headerSideWidth = hasCompanyAddress ? headerAddressWidth : totalPages > 1 ? 144 : 0;
+
   return (
     <section
       className="export-sheet print-card rounded-none bg-white text-black"
@@ -3834,7 +3909,14 @@ function PrintExpenseFormPage({
 
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
+              <div
+                className="min-w-0"
+                style={
+                  headerSideWidth
+                    ? { maxWidth: `calc(100% - ${headerSideWidth + 12}px)` }
+                    : undefined
+                }
+              >
                 <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
                   {exportCopy.companyCaption}
                 </p>
@@ -3854,10 +3936,23 @@ function PrintExpenseFormPage({
                 </p>
               </div>
 
-              {totalPages > 1 ? (
-                <p className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.18em] text-black/55">
-                  {formatFormPageCounter(currentPage, totalPages, exportLanguage)}
-                </p>
+              {hasCompanyAddress || totalPages > 1 ? (
+                <div className="shrink-0 text-right" style={{ width: headerSideWidth }}>
+                  {totalPages > 1 ? (
+                    <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-black/55">
+                      {formatFormPageCounter(currentPage, totalPages, exportLanguage)}
+                    </p>
+                  ) : null}
+                  {hasCompanyAddress ? (
+                    <p
+                      className={`whitespace-pre-line break-words text-[10px] leading-[1.1rem] text-black/65 ${
+                        totalPages > 1 ? "mt-2" : "mt-0.5"
+                      }`}
+                    >
+                      {trimmedCompanyAddress}
+                    </p>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </div>

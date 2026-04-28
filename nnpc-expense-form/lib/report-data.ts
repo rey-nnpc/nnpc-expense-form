@@ -43,6 +43,7 @@ type ExpenseItemRow = {
 type ExpenseReportRow = {
   id: string;
   expense_code: string | null;
+  company_address: string | null;
   company_id: string | null;
   company_name: string | null;
   company_tax_id: string | null;
@@ -59,6 +60,7 @@ type ExpenseReportRow = {
 export type ExpenseDayDocument = {
   reportId: string;
   expenseCode: string;
+  companyAddress: string;
   companyId: string;
   companyName: string;
   companyTaxId: string;
@@ -184,7 +186,7 @@ export async function listExpenseSummaries(accessToken: string) {
 export async function getExpenseDay(accessToken: string, expenseDate: string) {
   const rows = await supabaseJsonRequest<ExpenseReportRow[]>({
     accessToken,
-    path: `expense_reports?select=id,expense_code,company_id,company_name,company_tax_id,company_logo_data_url,company_logo_bucket_name,company_logo_object_path,export_language,department,employee_name,note,expense_items(id,expense_type_label,amount_thb,remark,line_number,expense_receipts(id,bucket_name,object_path,original_file_name,mime_type,file_size_bytes))&expense_date=eq.${expenseDate}&limit=1`,
+    path: `expense_reports?select=id,expense_code,company_address,company_id,company_name,company_tax_id,company_logo_data_url,company_logo_bucket_name,company_logo_object_path,export_language,department,employee_name,note,expense_items(id,expense_type_label,amount_thb,remark,line_number,expense_receipts(id,bucket_name,object_path,original_file_name,mime_type,file_size_bytes))&expense_date=eq.${expenseDate}&limit=1`,
   });
 
   const [report] = rows;
@@ -202,6 +204,7 @@ export async function getExpenseDay(accessToken: string, expenseDate: string) {
   return {
     reportId: report.id,
     expenseCode: report.expense_code ?? "",
+    companyAddress: report.company_address ?? "",
     companyId: report.company_id ?? "",
     companyName: report.company_name ?? "",
     companyTaxId: report.company_tax_id ?? "",
@@ -224,6 +227,7 @@ export async function getExpenseDay(accessToken: string, expenseDate: string) {
 
 export async function upsertExpenseDay({
   accessToken,
+  companyAddress,
   companyId,
   companyLogoBucketName,
   companyLogoObjectPath,
@@ -237,6 +241,7 @@ export async function upsertExpenseDay({
   rows,
 }: {
   accessToken: string;
+  companyAddress: string;
   companyId: string;
   companyLogoBucketName: string;
   companyLogoObjectPath: string;
@@ -263,6 +268,7 @@ export async function upsertExpenseDay({
   }>({
     accessToken,
     args: {
+      p_company_address: companyAddress.trim() || null,
       p_company_id: companyId || null,
       p_company_logo_bucket_name: companyLogoBucketName || null,
       p_company_logo_object_path: companyLogoObjectPath || null,

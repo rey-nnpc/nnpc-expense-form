@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { readCompaniesCache, writeCompaniesCache } from "@/lib/browser-cache";
 import {
   SESSION_EXPIRED_MESSAGE,
@@ -79,6 +80,7 @@ function ProtectedCompanySettings({
   session: AuthSession;
 }) {
   const cacheUserKey = session.userEmail;
+  const [companyAddressDraft, setCompanyAddressDraft] = useState("");
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [companyNameDraft, setCompanyNameDraft] = useState("");
   const [companyTaxIdDraft, setCompanyTaxIdDraft] = useState("");
@@ -88,6 +90,7 @@ function ProtectedCompanySettings({
   const [isLoadingCompanies, setIsLoadingCompanies] = useState(true);
   const [isSavingCompany, setIsSavingCompany] = useState(false);
   const [editingCompany, setEditingCompany] = useState<CompanyRecord | null>(null);
+  const [editCompanyAddressDraft, setEditCompanyAddressDraft] = useState("");
   const [editCompanyNameDraft, setEditCompanyNameDraft] = useState("");
   const [editCompanyTaxIdDraft, setEditCompanyTaxIdDraft] = useState("");
   const [editCompanyLogoFile, setEditCompanyLogoFile] = useState<File | null>(null);
@@ -177,6 +180,7 @@ function ProtectedCompanySettings({
 
   const resetEditCompanyState = () => {
     setEditingCompany(null);
+    setEditCompanyAddressDraft("");
     setEditCompanyNameDraft("");
     setEditCompanyTaxIdDraft("");
     setEditCompanyLogoFile(null);
@@ -186,6 +190,7 @@ function ProtectedCompanySettings({
 
   const openEditCompany = (company: CompanyRecord) => {
     setEditingCompany(company);
+    setEditCompanyAddressDraft(company.companyAddress);
     setEditCompanyNameDraft(company.companyName);
     setEditCompanyTaxIdDraft(company.companyTaxId);
     setEditCompanyLogoFile(null);
@@ -245,6 +250,7 @@ function ProtectedCompanySettings({
     try {
       const savedCompany = await createUserCompany({
         accessToken: session.accessToken,
+        companyAddress: companyAddressDraft,
         companyName: companyNameDraft,
         companyTaxId: companyTaxIdDraft,
         logoFile: companyLogoFile,
@@ -255,6 +261,7 @@ function ProtectedCompanySettings({
         writeCompaniesCache(cacheUserKey, nextCompanies);
         return nextCompanies;
       });
+      setCompanyAddressDraft("");
       setCompanyNameDraft("");
       setCompanyTaxIdDraft("");
       setCompanyLogoFile(null);
@@ -300,6 +307,7 @@ function ProtectedCompanySettings({
     try {
       const savedCompany = await updateUserCompany({
         accessToken: session.accessToken,
+        companyAddress: editCompanyAddressDraft,
         companyId: editingCompany.id,
         companyName: editCompanyNameDraft,
         companyTaxId: editCompanyTaxIdDraft,
@@ -429,6 +437,11 @@ function ProtectedCompanySettings({
                               Tax ID {company.companyTaxId}
                             </p>
                           ) : null}
+                          {company.companyAddress ? (
+                            <p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground">
+                              {company.companyAddress}
+                            </p>
+                          ) : null}
                           <p className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
                             Export ready
                           </p>
@@ -462,7 +475,8 @@ function ProtectedCompanySettings({
                   Add company
                 </CardTitle>
                 <CardDescription className="text-sm leading-7">
-                  Keep the export setup separate from the daily expense editor.
+                  Save the full PDF header once, including the address that prints in the
+                  top-right area.
                 </CardDescription>
               </CardHeader>
 
@@ -486,6 +500,16 @@ function ProtectedCompanySettings({
                     type="text"
                     value={companyTaxIdDraft}
                     onChange={(event) => setCompanyTaxIdDraft(event.target.value)}
+                  />
+                </label>
+
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-foreground">Company address</span>
+                  <Textarea
+                    className="min-h-24 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                    placeholder="99 Example Tower, 18th Floor, Sukhumvit Road, Khlong Toei, Bangkok 10110"
+                    value={companyAddressDraft}
+                    onChange={(event) => setCompanyAddressDraft(event.target.value)}
                   />
                 </label>
 
@@ -557,6 +581,11 @@ function ProtectedCompanySettings({
                         Tax ID {companyTaxIdDraft}
                       </p>
                     ) : null}
+                    {companyAddressDraft ? (
+                      <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
+                        {companyAddressDraft}
+                      </p>
+                    ) : null}
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">
                       This exact header is printed on the export form.
                     </p>
@@ -591,8 +620,8 @@ function ProtectedCompanySettings({
               Edit company
             </DialogTitle>
             <DialogDescription className="max-w-2xl text-sm leading-7">
-              Update the saved company name, tax ID, or replace the logo. The
-              changes will be available in the export selector right away.
+              Update the saved company name, tax ID, address, or logo. The changes
+              will be available in the export selector right away.
             </DialogDescription>
           </DialogHeader>
 
@@ -617,6 +646,16 @@ function ProtectedCompanySettings({
                   type="text"
                   value={editCompanyTaxIdDraft}
                   onChange={(event) => setEditCompanyTaxIdDraft(event.target.value)}
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-foreground">Company address</span>
+                <Textarea
+                  className="min-h-24 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                  placeholder="99 Example Tower, 18th Floor, Sukhumvit Road, Khlong Toei, Bangkok 10110"
+                  value={editCompanyAddressDraft}
+                  onChange={(event) => setEditCompanyAddressDraft(event.target.value)}
                 />
               </label>
 
@@ -693,6 +732,11 @@ function ProtectedCompanySettings({
                     No tax ID saved
                   </p>
                 )}
+                {editCompanyAddressDraft ? (
+                  <p className="mt-2 line-clamp-4 text-sm leading-6 text-muted-foreground">
+                    {editCompanyAddressDraft}
+                  </p>
+                ) : null}
                 <p className="mt-3 text-sm leading-6 text-muted-foreground">
                   This header will show anywhere the saved company is reused for export.
                 </p>

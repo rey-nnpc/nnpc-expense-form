@@ -2,7 +2,7 @@ import type { CompanyRecord } from "@/lib/company-data";
 import type { ExpenseSummary, ExportLanguage } from "@/lib/expense-data";
 import type { ExpenseDayDocument } from "@/lib/report-data";
 
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 5;
 const COMPANIES_TTL_MS = 30 * 60_000;
 const EXPENSE_DAY_TTL_MS = 10 * 60_000;
 const EXPENSE_DRAFT_TTL_MS = 24 * 60 * 60_000;
