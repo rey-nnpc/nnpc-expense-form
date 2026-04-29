@@ -429,16 +429,16 @@ function ProtectedCompanySettings({
                         </div>
 
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-foreground">
+                          <p className="text-sm font-medium text-foreground [overflow-wrap:anywhere]">
                             {company.companyName}
                           </p>
                           {company.companyTaxId ? (
-                            <p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                            <p className="mt-1 break-all text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
                               Tax ID {company.companyTaxId}
                             </p>
                           ) : null}
                           {company.companyAddress ? (
-                            <p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground">
+                            <p className="mt-2 line-clamp-2 text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]">
                               {company.companyAddress}
                             </p>
                           ) : null}
@@ -573,16 +573,16 @@ function ProtectedCompanySettings({
                   </div>
 
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground">
+                    <p className="text-sm font-medium text-foreground [overflow-wrap:anywhere]">
                       {companyNameDraft || "Your saved company name appears here"}
                     </p>
                     {companyTaxIdDraft ? (
-                      <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                      <p className="mt-1 break-all text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Tax ID {companyTaxIdDraft}
                       </p>
                     ) : null}
                     {companyAddressDraft ? (
-                      <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
+                      <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]">
                         {companyAddressDraft}
                       </p>
                     ) : null}
@@ -606,7 +606,7 @@ function ProtectedCompanySettings({
         }}
       >
         <DialogContent
-          className="rounded-[2rem] border-border/60 p-0 sm:max-w-[44rem]"
+          className="max-h-[calc(100dvh-2rem)] overflow-hidden rounded-[2rem] border-border/60 p-0 sm:max-w-[50rem]"
           showCloseButton={!isUpdatingCompany}
           onInteractOutside={(event) => {
             if (isUpdatingCompany) {
@@ -625,7 +625,7 @@ function ProtectedCompanySettings({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-6 px-6 py-6 md:grid-cols-[minmax(0,1.1fr)_15rem]">
+          <div className="grid items-start gap-6 overflow-y-auto px-6 py-6 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,20rem)]">
             <div className="space-y-5">
               <label className="block space-y-2">
                 <span className="text-sm font-medium text-foreground">Company name</span>
@@ -698,11 +698,11 @@ function ProtectedCompanySettings({
               ) : null}
             </div>
 
-            <div className="rounded-[1.75rem] border border-white/10 bg-background/60 p-4">
+            <div className="min-w-0 rounded-[1.75rem] border border-white/10 bg-background/60 p-4">
               <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
                 Updated preview
               </p>
-              <div className="mt-4 flex flex-col items-center text-center">
+              <div className="mt-4 flex w-full flex-col items-start text-left">
                 <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-background/85">
                   {editCompanyLogoDraft ? (
                     <Image
@@ -720,24 +720,24 @@ function ProtectedCompanySettings({
                   )}
                 </div>
 
-                <p className="mt-4 text-sm font-medium text-foreground">
+                <p className="mt-4 w-full text-sm font-medium text-foreground [overflow-wrap:anywhere]">
                   {editCompanyNameDraft || "Company name"}
                 </p>
                 {editCompanyTaxIdDraft ? (
-                  <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                  <p className="mt-1 w-full break-all text-xs uppercase tracking-[0.18em] text-muted-foreground">
                     Tax ID {editCompanyTaxIdDraft}
                   </p>
                 ) : (
-                  <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                  <p className="mt-1 w-full text-xs uppercase tracking-[0.18em] text-muted-foreground">
                     No tax ID saved
                   </p>
                 )}
                 {editCompanyAddressDraft ? (
-                  <p className="mt-2 line-clamp-4 text-sm leading-6 text-muted-foreground">
+                  <p className="mt-2 w-full line-clamp-5 text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]">
                     {editCompanyAddressDraft}
                   </p>
                 ) : null}
-                <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                <p className="mt-3 w-full text-sm leading-6 text-muted-foreground">
                   This header will show anywhere the saved company is reused for export.
                 </p>
               </div>
