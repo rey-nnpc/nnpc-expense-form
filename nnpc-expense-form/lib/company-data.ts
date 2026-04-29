@@ -2,6 +2,7 @@ import {
   buildPublicStorageUrl,
   COMPANY_ASSETS_BUCKET,
   createScopedObjectPath,
+  removeStorageObjects,
   SESSION_EXPIRED_MESSAGE,
   supabaseJsonRequest,
   uploadStorageObject,
@@ -9,7 +10,9 @@ import {
 
 export type CompanyRecord = {
   id: string;
+  companyAddress: string;
   companyName: string;
+  companyTaxId: string;
   logoUrl: string;
   logoBucketName: string | null;
   logoObjectPath: string | null;
@@ -19,7 +22,9 @@ export type CompanyRecord = {
 
 type CompanyRow = {
   id: string;
+  company_address: string | null;
   company_name: string;
+  company_tax_id: string | null;
   logo_data_url: string | null;
   logo_bucket_name: string | null;
   logo_object_path: string | null;
@@ -33,7 +38,9 @@ function mapCompanyRow(row: CompanyRow): CompanyRecord {
 
   return {
     id: row.id,
+    companyAddress: row.company_address ?? "",
     companyName: row.company_name,
+    companyTaxId: row.company_tax_id ?? "",
     logoUrl:
       logoBucketName && logoObjectPath
         ? buildPublicStorageUrl(logoBucketName, logoObjectPath)
@@ -50,7 +57,7 @@ export { SESSION_EXPIRED_MESSAGE };
 export async function listUserCompanies(accessToken: string) {
   const rows = await supabaseJsonRequest<CompanyRow[]>({
     accessToken,
-    path: "user_companies?select=id,company_name,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at&order=created_at.desc",
+    path: "user_companies?select=id,company_address,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at&order=created_at.desc",
   });
 
   return rows.map(mapCompanyRow);
@@ -58,11 +65,15 @@ export async function listUserCompanies(accessToken: string) {
 
 export async function createUserCompany({
   accessToken,
+  companyAddress,
   companyName,
+  companyTaxId,
   logoFile,
 }: {
   accessToken: string;
+  companyAddress: string;
   companyName: string;
+  companyTaxId: string;
   logoFile: File;
 }) {
   const objectPath = createScopedObjectPath({
@@ -83,7 +94,9 @@ export async function createUserCompany({
     accessToken,
     body: [
       {
+        company_address: companyAddress.trim() || null,
         company_name: companyName.trim(),
+        company_tax_id: companyTaxId.trim() || null,
         logo_data_url: null,
         logo_bucket_name: COMPANY_ASSETS_BUCKET,
         logo_object_path: objectPath,
@@ -94,7 +107,7 @@ export async function createUserCompany({
       Prefer: "return=representation",
     },
     method: "POST",
-    path: "user_companies?select=id,company_name,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at",
+    path: "user_companies?select=id,company_address,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at",
   });
 
   const [firstRow] = rows;
@@ -104,4 +117,97 @@ export async function createUserCompany({
   }
 
   return mapCompanyRow(firstRow);
+}
+
+export async function updateUserCompany({
+  accessToken,
+  companyAddress,
+  companyId,
+  companyName,
+  companyTaxId,
+  currentCompany,
+  logoFile,
+}: {
+  accessToken: string;
+  companyAddress: string;
+  companyId: string;
+  companyName: string;
+  companyTaxId: string;
+  currentCompany: Pick<
+    CompanyRecord,
+    "id" | "logoBucketName" | "logoObjectPath" | "originalLogoFileName"
+  >;
+  logoFile?: File | null;
+}) {
+  let uploadedObjectPath: string | null = null;
+
+  try {
+    const nextBody: Record<string, string | null> = {
+      company_address: companyAddress.trim() || null,
+      company_name: companyName.trim(),
+      company_tax_id: companyTaxId.trim() || null,
+    };
+
+    if (logoFile) {
+      uploadedObjectPath = createScopedObjectPath({
+        accessToken,
+        fileName: logoFile.name,
+        folder: "companies",
+      });
+
+      await uploadStorageObject({
+        accessToken,
+        bucketName: COMPANY_ASSETS_BUCKET,
+        contentType: logoFile.type,
+        file: logoFile,
+        objectPath: uploadedObjectPath,
+      });
+
+      nextBody.logo_data_url = null;
+      nextBody.logo_bucket_name = COMPANY_ASSETS_BUCKET;
+      nextBody.logo_object_path = uploadedObjectPath;
+      nextBody.original_logo_file_name = logoFile.name;
+    }
+
+    const rows = await supabaseJsonRequest<CompanyRow[]>({
+      accessToken,
+      body: nextBody,
+      headers: {
+        Prefer: "return=representation",
+      },
+      method: "PATCH",
+      path: `user_companies?id=eq.${encodeURIComponent(companyId)}&select=id,company_address,company_name,company_tax_id,logo_data_url,logo_bucket_name,logo_object_path,original_logo_file_name,created_at`,
+    });
+
+    const [firstRow] = rows;
+
+    if (!firstRow) {
+      throw new Error("Supabase did not return the updated company.");
+    }
+
+    if (
+      uploadedObjectPath &&
+      currentCompany.logoBucketName &&
+      currentCompany.logoObjectPath &&
+      currentCompany.logoObjectPath !== uploadedObjectPath
+    ) {
+      void removeStorageObjects({
+        accessToken,
+        bucketName: currentCompany.logoBucketName,
+        objectPaths: [currentCompany.logoObjectPath],
+      }).catch(() => undefined);
+    }
+
+    return mapCompanyRow(firstRow);
+  } catch (error) {
+    if (uploadedObjectPath) {
+      void removeStorageObjects({
+        accessToken,
+        bucketName: COMPANY_ASSETS_BUCKET,
+        objectPaths: [uploadedObjectPath],
+      }).catch(() => undefined);
+    }
+
+    throw error;
+  }
 }

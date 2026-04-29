@@ -43,12 +43,15 @@ type ExpenseItemRow = {
 type ExpenseReportRow = {
   id: string;
   expense_code: string | null;
+  company_address: string | null;
   company_id: string | null;
   company_name: string | null;
+  company_tax_id: string | null;
   company_logo_data_url: string | null;
   company_logo_bucket_name: string | null;
   company_logo_object_path: string | null;
   export_language: ExportLanguage | null;
+  department: string | null;
   employee_name: string | null;
   note: string | null;
   expense_items: ExpenseItemRow[] | null;
@@ -57,11 +60,14 @@ type ExpenseReportRow = {
 export type ExpenseDayDocument = {
   reportId: string;
   expenseCode: string;
+  companyAddress: string;
   companyId: string;
   companyName: string;
+  companyTaxId: string;
   companyLogoBucketName: string;
   companyLogoObjectPath: string;
   companyLogoUrl: string;
+  department: string;
   employeeName: string;
   exportLanguage: ExportLanguage;
   note: string;
@@ -180,7 +186,7 @@ export async function listExpenseSummaries(accessToken: string) {
 export async function getExpenseDay(accessToken: string, expenseDate: string) {
   const rows = await supabaseJsonRequest<ExpenseReportRow[]>({
     accessToken,
-    path: `expense_reports?select=id,expense_code,company_id,company_name,company_logo_data_url,company_logo_bucket_name,company_logo_object_path,export_language,employee_name,note,expense_items(id,expense_type_label,amount_thb,remark,line_number,expense_receipts(id,bucket_name,object_path,original_file_name,mime_type,file_size_bytes))&expense_date=eq.${expenseDate}&limit=1`,
+    path: `expense_reports?select=id,expense_code,company_address,company_id,company_name,company_tax_id,company_logo_data_url,company_logo_bucket_name,company_logo_object_path,export_language,department,employee_name,note,expense_items(id,expense_type_label,amount_thb,remark,line_number,expense_receipts(id,bucket_name,object_path,original_file_name,mime_type,file_size_bytes))&expense_date=eq.${expenseDate}&limit=1`,
   });
 
   const [report] = rows;
@@ -198,14 +204,17 @@ export async function getExpenseDay(accessToken: string, expenseDate: string) {
   return {
     reportId: report.id,
     expenseCode: report.expense_code ?? "",
+    companyAddress: report.company_address ?? "",
     companyId: report.company_id ?? "",
     companyName: report.company_name ?? "",
+    companyTaxId: report.company_tax_id ?? "",
     companyLogoBucketName,
     companyLogoObjectPath,
     companyLogoUrl:
       companyLogoBucketName && companyLogoObjectPath
         ? buildPublicStorageUrl(companyLogoBucketName, companyLogoObjectPath)
         : report.company_logo_data_url ?? "",
+    department: report.department ?? "",
     employeeName: report.employee_name ?? "",
     exportLanguage: report.export_language === "th" ? "th" : "en",
     note: report.note ?? "",
@@ -218,10 +227,13 @@ export async function getExpenseDay(accessToken: string, expenseDate: string) {
 
 export async function upsertExpenseDay({
   accessToken,
+  companyAddress,
   companyId,
   companyLogoBucketName,
   companyLogoObjectPath,
   companyName,
+  companyTaxId,
+  department,
   employeeName,
   expenseDate,
   exportLanguage,
@@ -229,10 +241,13 @@ export async function upsertExpenseDay({
   rows,
 }: {
   accessToken: string;
+  companyAddress: string;
   companyId: string;
   companyLogoBucketName: string;
   companyLogoObjectPath: string;
   companyName: string;
+  companyTaxId: string;
+  department: string;
   employeeName: string;
   expenseDate: string;
   exportLanguage: ExportLanguage;
@@ -253,10 +268,13 @@ export async function upsertExpenseDay({
   }>({
     accessToken,
     args: {
+      p_company_address: companyAddress.trim() || null,
       p_company_id: companyId || null,
       p_company_logo_bucket_name: companyLogoBucketName || null,
       p_company_logo_object_path: companyLogoObjectPath || null,
       p_company_name: companyName.trim() || null,
+      p_company_tax_id: companyTaxId.trim() || null,
+      p_department: department.trim() || null,
       p_employee_name: employeeName.trim() || null,
       p_expense_date: expenseDate,
       p_export_language: exportLanguage,

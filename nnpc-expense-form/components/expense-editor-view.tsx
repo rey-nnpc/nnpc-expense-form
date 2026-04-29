@@ -13,7 +13,6 @@ import Link from "next/link";
 import {
   CircleAlert,
   Building2,
-  CalendarDays,
   ChevronDown,
   ChevronUp,
   CloudCheck,
@@ -99,11 +98,9 @@ import {
 } from "../lib/date";
 import {
   EXPENSE_TYPES,
-  buildRemarkSummary,
   createEmptyRow,
   deriveDisplayName,
   findExpenseTypeLabel,
-  formatCurrency,
   formatFileSize,
   hasRowContent,
   parseAmount,
@@ -117,6 +114,7 @@ import {
   getExpenseDay,
   upsertExpenseDay,
 } from "../lib/report-data";
+import { getUserProfile, type UserProfile } from "../lib/profile-data";
 import { buildPublicStorageUrl } from "../lib/supabase-api";
 
 const EMPTY_COMPANY_VALUE = "__none__";
@@ -126,6 +124,7 @@ const IMAGE_PRELOAD_TIMEOUT_MS = 12_000;
 const PRINT_TABLE_GRID_TEMPLATE = "1.6fr 1.75fr 2.95fr 1.25fr";
 const EXPORT_PAGE_WIDTH_PX = 794;
 const EXPORT_PAGE_HEIGHT_PX = 1123;
+const BLANK_PRINT_FIELD_VALUE = " ";
 
 const EXPORT_COPY: Record<
   ExportLanguage,
@@ -134,6 +133,8 @@ const EXPORT_COPY: Record<
     formSubtitle: string;
     companyCaption: string;
     companyPending: string;
+    companyTaxId: string;
+    department: string;
     date: string;
     employee: string;
     reference: string;
@@ -158,9 +159,11 @@ const EXPORT_COPY: Record<
     formSubtitle: "",
     companyCaption: "Company",
     companyPending: "Select a company in Company Headers",
+    companyTaxId: "Company Tax ID",
+    department: "Department",
     date: "Date",
     employee: "Employee",
-    reference: "Reference",
+    reference: "Expense Serial No.",
     note: "Note",
     line: "No.",
     expenseType: "Expense type",
@@ -181,9 +184,11 @@ const EXPORT_COPY: Record<
     formSubtitle: "",
     companyCaption: "บริษัท",
     companyPending: "กรุณาเลือกบริษัทจากแท็บ Company Headers",
+    companyTaxId: "เลขประจำตัวผู้เสียภาษี",
+    department: "แผนก",
     date: "วันที่",
     employee: "ชื่อผู้เบิก",
-    reference: "เลขอ้างอิง",
+    reference: "เลขที่เอกสารฝ่ายการเงิน",
     note: "หมายเหตุ",
     line: "ลำดับ",
     expenseType: "ประเภทค่าใช้จ่าย",
@@ -280,6 +285,9 @@ type ExportAssetPreparationResult = {
 
 type ExportPdfSource = {
   assetUrlMap: Record<string, string>;
+  companyAddress: string;
+  companyTaxId: string;
+  department: string;
   displayExpenseReference: string;
   employeeName: string;
   expenseDate: string;
@@ -294,10 +302,13 @@ type ExportPdfSource = {
 };
 
 type PendingSaveSnapshot = {
+  companyAddress: string;
   companyId: string;
   companyLogoBucketName: string;
   companyLogoObjectPath: string;
   companyName: string;
+  companyTaxId: string;
+  department: string;
   employeeName: string;
   exportLanguage: ExportLanguage;
   note: string;
@@ -306,6 +317,7 @@ type PendingSaveSnapshot = {
 
 type HydratedExpenseDraft = {
   companyId: string;
+  department: string;
   employeeName: string;
   exportLanguage: ExportLanguage;
   note: string;
@@ -369,6 +381,15 @@ function readFileAsDataUrl(file: File) {
 
     reader.readAsDataURL(file);
   });
+}
+
+function resizeTextareaElement(element: HTMLTextAreaElement | null) {
+  if (!element) {
+    return;
+  }
+
+  element.style.height = "0px";
+  element.style.height = `${element.scrollHeight}px`;
 }
 
 function isDataUrl(url: string) {
@@ -714,6 +735,24 @@ function drawHorizontalRule(
   context.restore();
 }
 
+function getCompanyAddressHeaderWidth(address: string) {
+  const trimmedAddress = address.trim();
+
+  if (!trimmedAddress) {
+    return 0;
+  }
+
+  if (trimmedAddress.length > 110) {
+    return 224;
+  }
+
+  if (trimmedAddress.length > 64) {
+    return 196;
+  }
+
+  return 164;
+}
+
 function drawImageContain({
   context,
   height,
@@ -763,6 +802,7 @@ function loadCanvasImage(
 function drawInfoLine({
   context,
   label,
+  reserveWritingSpace,
   value,
   width,
   x,
@@ -770,6 +810,7 @@ function drawInfoLine({
 }: {
   context: CanvasRenderingContext2D;
   label: string;
+  reserveWritingSpace?: boolean;
   value: string;
   width: number;
   x: number;
@@ -787,20 +828,23 @@ function drawInfoLine({
     y,
   });
 
-  drawTextBlock({
-    context,
-    font: "500 13px Arial, sans-serif",
-    lineHeight: 20,
-    maxLines: 2,
-    maxWidth: width,
-    text: value,
-    x,
-    y: y + 18,
-  });
+  if (!reserveWritingSpace || value.trim()) {
+    drawTextBlock({
+      context,
+      font: "500 13px Arial, sans-serif",
+      lineHeight: 20,
+      maxLines: 2,
+      maxWidth: width,
+      text: value,
+      x,
+      y: y + 18,
+    });
+  }
 
-  drawHorizontalRule(context, x, y + 52, width, "rgba(0,0,0,0.15)");
+  const ruleY = y + (reserveWritingSpace ? 62 : 52);
+  drawHorizontalRule(context, x, ruleY, width, "rgba(0,0,0,0.15)");
 
-  return y + 52;
+  return ruleY;
 }
 
 async function renderFormPageCanvas(
@@ -812,8 +856,24 @@ async function renderFormPageCanvas(
   const { canvas, context } = createExportPageCanvas();
   const contentX = EXPORT_PAGE_PADDING_PX;
   const contentWidth = EXPORT_CONTENT_WIDTH_PX;
-  const infoWidth = (contentWidth - 16) / 2;
   const logoSize = 64;
+  const headerTextX = contentX + logoSize + 18;
+  const trimmedCompanyAddress = source.companyAddress.trim();
+  const hasCompanyAddress = Boolean(trimmedCompanyAddress);
+  const rightHeaderWidth = getCompanyAddressHeaderWidth(trimmedCompanyAddress);
+  const headerSideReserve = hasCompanyAddress
+    ? rightHeaderWidth + 24
+    : source.printableFormPages.length > 1
+      ? 156
+      : 0;
+  const headerTextMaxWidth = Math.max(
+    220,
+    contentX + contentWidth - headerTextX - headerSideReserve,
+  );
+  const infoGap = 20;
+  const leftInfoWidth = (contentWidth - infoGap) * 0.4;
+  const rightInfoWidth = contentWidth - infoGap - leftInfoWidth;
+  const rightInfoX = contentX + leftInfoWidth + infoGap;
   let y = EXPORT_PAGE_PADDING_PX;
 
   if (source.selectedCompanyLogoUrl) {
@@ -844,15 +904,13 @@ async function renderFormPageCanvas(
     }
   }
 
-  const headerTextX = contentX + logoSize + 18;
-
   drawTextBlock({
     color: "rgba(0,0,0,0.55)",
     context,
     font: "600 10px Arial, sans-serif",
     lineHeight: 11,
     maxLines: 1,
-    maxWidth: contentWidth - logoSize - 120,
+    maxWidth: headerTextMaxWidth,
     text: source.exportCopy.companyCaption.toUpperCase(),
     x: headerTextX,
     y,
@@ -863,14 +921,28 @@ async function renderFormPageCanvas(
     font: "600 28px Georgia, 'Times New Roman', serif",
     lineHeight: 24,
     maxLines: 2,
-    maxWidth: contentWidth - logoSize - 120,
+    maxWidth: headerTextMaxWidth,
     text: source.selectedCompanyName || source.exportCopy.companyPending,
     x: headerTextX,
     y: y + 16,
   });
 
+  const companyTaxIdHeight = source.companyTaxId
+    ? drawTextBlock({
+        color: "rgba(0,0,0,0.6)",
+        context,
+        font: "700 10px Arial, sans-serif",
+        lineHeight: 12,
+        maxLines: 1,
+        maxWidth: headerTextMaxWidth,
+        text: `${source.exportCopy.companyTaxId.toUpperCase()}: ${source.companyTaxId}`,
+        x: headerTextX,
+        y: y + 18 + companyNameHeight,
+      })
+    : 0;
+
   const hasFormSubtitle = Boolean(source.exportCopy.formSubtitle.trim());
-  const subtitleY = y + 16 + companyNameHeight + 4;
+  const subtitleY = y + 16 + companyNameHeight + companyTaxIdHeight + 4;
 
   if (hasFormSubtitle) {
     drawTextBlock({
@@ -879,7 +951,7 @@ async function renderFormPageCanvas(
       font: "400 11px Arial, sans-serif",
       lineHeight: 13,
       maxLines: 1,
-      maxWidth: contentWidth - logoSize - 120,
+      maxWidth: headerTextMaxWidth,
       text: source.exportCopy.formSubtitle,
       x: headerTextX,
       y: subtitleY,
@@ -892,7 +964,7 @@ async function renderFormPageCanvas(
     font: "700 13px Arial, sans-serif",
     lineHeight: 14,
     maxLines: 1,
-    maxWidth: contentWidth - logoSize - 120,
+    maxWidth: headerTextMaxWidth,
     text: source.exportCopy.formTitle,
     x: headerTextX,
     y: titleY,
@@ -917,7 +989,24 @@ async function renderFormPageCanvas(
     });
   }
 
-  const headerBottom = Math.max(y + logoSize, titleY + 18);
+  const addressHeight = hasCompanyAddress
+    ? drawTextBlock({
+        align: "right",
+        color: "rgba(0,0,0,0.64)",
+        context,
+        font: "400 10px Arial, sans-serif",
+        lineHeight: 14,
+        maxLines: Number.MAX_SAFE_INTEGER,
+        maxWidth: rightHeaderWidth,
+        text: trimmedCompanyAddress,
+        x: contentX + contentWidth - rightHeaderWidth,
+        y: y + (source.printableFormPages.length > 1 ? 18 : 4),
+      })
+    : 0;
+  const addressBottom = hasCompanyAddress
+    ? y + (source.printableFormPages.length > 1 ? 18 : 4) + addressHeight
+    : 0;
+  const headerBottom = Math.max(y + logoSize, titleY + 18, addressBottom);
   drawHorizontalRule(context, contentX, headerBottom + 10, contentWidth, "rgba(0,0,0,0.25)");
   y = headerBottom + 26;
 
@@ -925,7 +1014,7 @@ async function renderFormPageCanvas(
     context,
     label: source.exportCopy.date,
     value: formatExportDate(source.expenseDate, source.exportLanguage),
-    width: infoWidth,
+    width: leftInfoWidth,
     x: contentX,
     y,
   });
@@ -933,23 +1022,31 @@ async function renderFormPageCanvas(
     context,
     label: source.exportCopy.employee,
     value: source.employeeName,
-    width: infoWidth,
-    x: contentX + infoWidth + 16,
+    width: rightInfoWidth,
+    x: rightInfoX,
     y,
   });
 
-  y += 70;
+  drawInfoLine({
+    context,
+    label: source.exportCopy.department,
+    value: source.department || "-",
+    width: leftInfoWidth,
+    x: contentX,
+    y: y + 68,
+  });
 
   drawInfoLine({
     context,
     label: source.exportCopy.reference,
-    value: source.displayExpenseReference,
-    width: infoWidth,
-    x: contentX,
-    y,
+    reserveWritingSpace: true,
+    value: BLANK_PRINT_FIELD_VALUE,
+    width: rightInfoWidth,
+    x: rightInfoX,
+    y: y + 68,
   });
 
-  y += 68;
+  y += 148;
 
   drawTextBlock({
     color: "rgba(0,0,0,0.55)",
@@ -1128,26 +1225,36 @@ async function renderFormPageCanvas(
   }
 
   if (pageIndex === source.printableFormPages.length - 1) {
-    const fixedFooterTop = EXPORT_PAGE_HEIGHT_PX - EXPORT_PAGE_PADDING_PX - 126;
-    const footerTop = Math.max(tableY + tableHeight + 14, fixedFooterTop);
+    const fixedFooterTop = EXPORT_PAGE_HEIGHT_PX - EXPORT_PAGE_PADDING_PX - 154;
+    const footerTop = Math.max(tableY + tableHeight + 18, fixedFooterTop);
     drawHorizontalRule(context, contentX, footerTop, contentWidth, "rgba(0,0,0,0.25)");
 
     drawTextBlock({
       align: "right",
+      color: "rgba(0,0,0,0.55)",
       context,
-      font: "600 12px Arial, sans-serif",
-      lineHeight: 14,
+      font: "700 9px Arial, sans-serif",
+      lineHeight: 10,
       maxLines: 1,
       maxWidth: contentWidth,
-      text: `${source.exportCopy.total}: ${formatPrintAmount(
-        source.totalAmount,
-        source.exportLanguage,
-      )}`,
+      text: source.exportCopy.total.toUpperCase(),
       x: contentX,
       y: footerTop + 10,
     });
 
-    const signatureTop = footerTop + 56;
+    drawTextBlock({
+      align: "right",
+      context,
+      font: "700 24px Arial, sans-serif",
+      lineHeight: 26,
+      maxLines: 1,
+      maxWidth: contentWidth,
+      text: formatPrintAmount(source.totalAmount, source.exportLanguage),
+      x: contentX,
+      y: footerTop + 24,
+    });
+
+    const signatureTop = footerTop + 74;
     const signatureGap = 14;
     const signatureWidth = (contentWidth - signatureGap * 2) / 3;
 
@@ -1629,10 +1736,13 @@ function ProtectedExpenseEditor({
 }) {
   const defaultEmployeeName = deriveDisplayName(session.userEmail);
   const cacheUserKey = session.userEmail;
+  const [department, setDepartment] = useState("");
   const [employeeName, setEmployeeName] = useState(defaultEmployeeName);
   const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [loadedCompanyId, setLoadedCompanyId] = useState("");
+  const [loadedCompanyAddress, setLoadedCompanyAddress] = useState("");
   const [loadedCompanyName, setLoadedCompanyName] = useState("");
+  const [loadedCompanyTaxId, setLoadedCompanyTaxId] = useState("");
   const [loadedCompanyLogoBucketName, setLoadedCompanyLogoBucketName] = useState("");
   const [loadedCompanyLogoObjectPath, setLoadedCompanyLogoObjectPath] = useState("");
   const [loadedCompanyLogoUrl, setLoadedCompanyLogoUrl] = useState("");
@@ -1673,15 +1783,22 @@ function ProtectedExpenseEditor({
     existingReport: ExpenseDayDocument | null,
     nextCompanies: CompanyRecord[],
     hydratedDraft: HydratedExpenseDraft | null,
+    savedProfile: UserProfile | null,
   ) => {
     setCompanies(nextCompanies);
     setDocumentError(null);
 
+    const defaultProfileName = savedProfile?.fullName.trim() || defaultEmployeeName;
+    const defaultProfileDepartment = savedProfile?.department.trim() || "";
+
     if (!existingReport && !hydratedDraft) {
-      setEmployeeName(defaultEmployeeName);
+      setDepartment(defaultProfileDepartment);
+      setEmployeeName(defaultProfileName);
       setSelectedCompanyId("");
       setLoadedCompanyId("");
+      setLoadedCompanyAddress("");
       setLoadedCompanyName("");
+      setLoadedCompanyTaxId("");
       setLoadedCompanyLogoBucketName("");
       setLoadedCompanyLogoObjectPath("");
       setLoadedCompanyLogoUrl("");
@@ -1690,12 +1807,21 @@ function ProtectedExpenseEditor({
       setNote("");
       setRows([]);
     } else {
+      setDepartment(
+        hydratedDraft?.department.trim() ||
+          existingReport?.department.trim() ||
+          defaultProfileDepartment,
+      );
       setEmployeeName(
-        hydratedDraft?.employeeName ?? existingReport?.employeeName ?? defaultEmployeeName,
+        hydratedDraft?.employeeName.trim() ||
+          existingReport?.employeeName.trim() ||
+          defaultProfileName,
       );
       setSelectedCompanyId(hydratedDraft?.companyId ?? existingReport?.companyId ?? "");
       setLoadedCompanyId(existingReport?.companyId ?? "");
+      setLoadedCompanyAddress(existingReport?.companyAddress ?? "");
       setLoadedCompanyName(existingReport?.companyName ?? "");
+      setLoadedCompanyTaxId(existingReport?.companyTaxId ?? "");
       setLoadedCompanyLogoBucketName(existingReport?.companyLogoBucketName ?? "");
       setLoadedCompanyLogoObjectPath(existingReport?.companyLogoObjectPath ?? "");
       setLoadedCompanyLogoUrl(existingReport?.companyLogoUrl ?? "");
@@ -1723,7 +1849,16 @@ function ProtectedExpenseEditor({
       const cachedCompanies = readCompaniesCache(nextCacheUserKey);
       const cachedExpenseDay = readExpenseDayCache(nextCacheUserKey, nextExpenseDate);
       const cachedDraft = readExpenseDraftCache(nextCacheUserKey, nextExpenseDate);
-      const [nextCompanies, existingReport] = await Promise.all([
+      const savedProfilePromise = getUserProfile(session.accessToken).catch((error: unknown) => {
+        if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+          throw error;
+        }
+
+        return null;
+      });
+
+      const [savedProfile, nextCompanies, existingReport] = await Promise.all([
+        savedProfilePromise,
         cachedCompanies
           ? Promise.resolve(cachedCompanies)
           : listUserCompanies(session.accessToken),
@@ -1750,6 +1885,7 @@ function ProtectedExpenseEditor({
         try {
           hydratedDraft = {
             companyId: cachedDraft.companyId,
+            department: cachedDraft.department,
             employeeName: cachedDraft.employeeName,
             exportLanguage: cachedDraft.exportLanguage,
             note: cachedDraft.note,
@@ -1760,7 +1896,7 @@ function ProtectedExpenseEditor({
         }
       }
 
-      applyLoadedDocument(existingReport, nextCompanies, hydratedDraft);
+      applyLoadedDocument(existingReport, nextCompanies, hydratedDraft, savedProfile);
     },
   );
 
@@ -1807,6 +1943,12 @@ function ProtectedExpenseEditor({
   const selectedCompanyName =
     selectedCompany?.companyName ??
     (shouldUseLoadedCompanySnapshot ? loadedCompanyName : "");
+  const selectedCompanyAddress =
+    selectedCompany?.companyAddress ??
+    (shouldUseLoadedCompanySnapshot ? loadedCompanyAddress : "");
+  const selectedCompanyTaxId =
+    selectedCompany?.companyTaxId ??
+    (shouldUseLoadedCompanySnapshot ? loadedCompanyTaxId : "");
   const selectedCompanyLogoBucketName =
     selectedCompany?.logoBucketName ??
     (shouldUseLoadedCompanySnapshot ? loadedCompanyLogoBucketName : "");
@@ -1818,10 +1960,13 @@ function ProtectedExpenseEditor({
 
   const buildPendingSaveSnapshot = () =>
     ({
+      companyAddress: selectedCompanyAddress,
       companyId: selectedCompanyId,
       companyLogoBucketName: selectedCompanyLogoBucketName,
       companyLogoObjectPath: selectedCompanyLogoObjectPath,
       companyName: selectedCompanyName,
+      companyTaxId: selectedCompanyTaxId,
+      department,
       employeeName,
       exportLanguage,
       note,
@@ -1835,10 +1980,13 @@ function ProtectedExpenseEditor({
     try {
       const saveResult = await upsertExpenseDay({
         accessToken: session.accessToken,
+        companyAddress: nextSnapshot.companyAddress,
         companyId: nextSnapshot.companyId,
         companyLogoBucketName: nextSnapshot.companyLogoBucketName,
         companyLogoObjectPath: nextSnapshot.companyLogoObjectPath,
         companyName: nextSnapshot.companyName,
+        companyTaxId: nextSnapshot.companyTaxId,
+        department: nextSnapshot.department,
         employeeName: nextSnapshot.employeeName,
         expenseDate,
         exportLanguage: nextSnapshot.exportLanguage,
@@ -1871,11 +2019,14 @@ function ProtectedExpenseEditor({
           : "";
 
       writeExpenseDayCache(cacheUserKey, expenseDate, {
+        companyAddress: nextSnapshot.companyAddress,
         companyId: nextSnapshot.companyId,
         companyLogoBucketName: nextSnapshot.companyLogoBucketName,
         companyLogoObjectPath: nextSnapshot.companyLogoObjectPath,
         companyLogoUrl: cachedCompanyLogoUrl,
         companyName: nextSnapshot.companyName,
+        companyTaxId: nextSnapshot.companyTaxId,
+        department: nextSnapshot.department,
         employeeName: nextSnapshot.employeeName,
         exportLanguage: nextSnapshot.exportLanguage,
         note: nextSnapshot.note,
@@ -2012,10 +2163,13 @@ function ProtectedExpenseEditor({
     }
 
     pendingSaveRef.current = {
+      companyAddress: selectedCompanyAddress,
       companyId: selectedCompanyId,
       companyLogoBucketName: selectedCompanyLogoBucketName,
       companyLogoObjectPath: selectedCompanyLogoObjectPath,
       companyName: selectedCompanyName,
+      companyTaxId: selectedCompanyTaxId,
+      department,
       employeeName,
       exportLanguage,
       note,
@@ -2037,14 +2191,17 @@ function ProtectedExpenseEditor({
       }
     };
   }, [
+    department,
     employeeName,
     exportLanguage,
     note,
     rows,
     selectedCompanyId,
+    selectedCompanyAddress,
     selectedCompanyLogoBucketName,
     selectedCompanyLogoObjectPath,
     selectedCompanyName,
+    selectedCompanyTaxId,
   ]);
 
   useEffect(() => {
@@ -2059,6 +2216,7 @@ function ProtectedExpenseEditor({
 
     const nextDraftSnapshot = {
       companyId: selectedCompanyId,
+      department,
       employeeName,
       exportLanguage,
       note,
@@ -2080,7 +2238,15 @@ function ProtectedExpenseEditor({
         draftTimerRef.current = null;
       }
     };
-  }, [employeeName, exportLanguage, note, rows, selectedCompanyId]);
+  }, [department, employeeName, exportLanguage, note, rows, selectedCompanyId]);
+
+  useEffect(() => {
+    document
+      .querySelectorAll<HTMLTextAreaElement>("textarea[data-auto-resize='true']")
+      .forEach((textarea) => {
+        resizeTextareaElement(textarea);
+      });
+  }, [note, rows]);
 
   const flushDraftAndPendingWork = useEffectEvent(() => {
     flushDraftToCache();
@@ -2195,6 +2361,7 @@ function ProtectedExpenseEditor({
   const printableEmployeeName = employeeName || defaultEmployeeName;
   const totalAmount = rows.reduce((sum, row) => sum + parseAmount(row.amount), 0);
   const totalReceipts = rows.reduce((sum, row) => sum + row.receipts.length, 0);
+  const printableDepartment = department.trim();
   const exportCopy = EXPORT_COPY[exportLanguage];
   const hasStoredCompanySnapshot = Boolean(loadedCompanyName.trim() || loadedCompanyLogoUrl);
   const printableFormPages =
@@ -2238,7 +2405,10 @@ function ProtectedExpenseEditor({
           : exportCopy.formTitle,
       node: (
         <PrintExpenseFormPage
+          companyAddress={selectedCompanyAddress}
+          companyTaxId={selectedCompanyTaxId}
           currentPage={pageIndex + 1}
+          department={printableDepartment}
           displayExpenseReference={displayExpenseReference}
           employeeName={printableEmployeeName}
           expenseDate={expenseDate}
@@ -2492,6 +2662,9 @@ function ProtectedExpenseEditor({
     );
 
     return {
+      companyTaxId: selectedCompanyTaxId,
+      companyAddress: selectedCompanyAddress,
+      department: printableDepartment,
       displayExpenseReference: formatExpenseReferenceCode(expenseDate, nextExpenseCode),
       exportCopy: EXPORT_COPY[exportLanguage],
       exportLanguage,
@@ -2601,6 +2774,9 @@ function ProtectedExpenseEditor({
 
       const exportBlob = await createExportPdfBlob({
         assetUrlMap: preparedAssetUrlMap,
+        companyAddress: exportArtifacts.companyAddress,
+        companyTaxId: exportArtifacts.companyTaxId,
+        department: exportArtifacts.department,
         displayExpenseReference: exportArtifacts.displayExpenseReference,
         employeeName: exportArtifacts.printableEmployeeName,
         expenseDate,
@@ -2661,6 +2837,9 @@ function ProtectedExpenseEditor({
           : await prepareExportAssets(exportArtifacts.printableAssetUrls);
       const exportBlob = await createExportPdfBlob({
         assetUrlMap: preparedAssetUrlMap,
+        companyAddress: exportArtifacts.companyAddress,
+        companyTaxId: exportArtifacts.companyTaxId,
+        department: exportArtifacts.department,
         displayExpenseReference: exportArtifacts.displayExpenseReference,
         employeeName: exportArtifacts.printableEmployeeName,
         expenseDate,
@@ -2856,11 +3035,12 @@ function ProtectedExpenseEditor({
               </div>
 
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-[minmax(0,1.35fr)_repeat(3,minmax(0,1fr))]">
                   <EditorMetric
                     label="Reference"
                     value={displayExpenseReference}
                     icon={<Hash className="size-4" />}
+                    valueClassName="break-all font-mono text-sm tracking-[0.05em] sm:text-[0.95rem]"
                   />
                   <EditorMetric
                     label="Employee"
@@ -2876,11 +3056,6 @@ function ProtectedExpenseEditor({
                     label="Receipts"
                     value={`${totalReceipts}`}
                     icon={<Receipt className="size-4" />}
-                  />
-                  <EditorMetric
-                    label="Total"
-                    value={formatCurrency(totalAmount)}
-                    icon={<CalendarDays className="size-4" />}
                   />
                 </div>
 
@@ -2921,8 +3096,8 @@ function ProtectedExpenseEditor({
                       Daily line items
                     </CardTitle>
                     <CardDescription className="text-sm leading-7 sm:text-base">
-                      Expand any row to update the details, attach more than one receipt
-                      photo, or remove a photo before export.
+                      Keep the list lightweight. Expand a row only when you need to edit
+                      the amount, remark, or receipt photos.
                     </CardDescription>
                   </div>
 
@@ -2986,9 +3161,6 @@ function ProtectedExpenseEditor({
                                 <Badge className="rounded-full px-3 py-1">
                                   {findExpenseTypeLabel(row.typeId)}
                                 </Badge>
-                                <Badge className="rounded-full px-3 py-1" variant="outline">
-                                  {rowReference}
-                                </Badge>
                                 {row.receipts.length > 0 ? (
                                   <Badge className="rounded-full px-3 py-1" variant="outline">
                                     {row.receipts.length} photo
@@ -2997,18 +3169,25 @@ function ProtectedExpenseEditor({
                                 ) : null}
                               </div>
 
-                              <p className="mt-3 text-sm leading-6 text-foreground sm:text-base">
-                                {row.remark.trim()
-                                  ? buildRemarkSummary(row.remark)
-                                  : "Add a short note so everyone understands what this expense was for."}
+                              <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                                <span className="inline-flex rounded-full border border-white/10 bg-background/70 px-3 py-1 font-mono tracking-[0.12em] text-foreground/80">
+                                  {rowReference}
+                                </span>
+                                <span className="inline-flex rounded-full border border-dashed border-white/10 px-3 py-1">
+                                  {row.receipts.length > 0
+                                    ? "Receipts attached"
+                                    : "No receipts yet"}
+                                </span>
+                              </div>
+
+                              <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                                Expand to edit amount, remark, and receipt photos.
                               </p>
                             </div>
 
                             <div className="flex items-center justify-between gap-3 sm:justify-end">
-                              <span className="text-base font-semibold text-foreground">
-                                {row.amount.trim()
-                                  ? formatCurrency(parseAmount(row.amount))
-                                  : "THB 0.00"}
+                              <span className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+                                {row.isExpanded ? "Hide details" : "Edit details"}
                               </span>
                               <span className="flex size-10 items-center justify-center rounded-2xl border border-white/10 bg-background/80 text-muted-foreground">
                                 {row.isExpanded ? (
@@ -3069,7 +3248,11 @@ function ProtectedExpenseEditor({
                                   Remark
                                 </span>
                                 <Textarea
-                                  className="min-h-24 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                                  className="min-h-24 resize-none overflow-hidden rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                                  data-auto-resize="true"
+                                  onInput={(event) => {
+                                    resizeTextareaElement(event.currentTarget);
+                                  }}
                                   placeholder="What was this expense for?"
                                   value={row.remark}
                                   onChange={(event) =>
@@ -3215,7 +3398,7 @@ function ProtectedExpenseEditor({
                       </p>
                     ) : (
                       <p className="text-xs leading-6 text-muted-foreground">
-                        The selected company name and logo appear on every exported page.
+                        The selected company header appears on every exported page.
                       </p>
                     )}
                   </label>
@@ -3244,8 +3427,18 @@ function ProtectedExpenseEditor({
                         <p className="mt-2 truncate text-sm font-medium text-foreground">
                           {selectedCompanyName || "No company selected yet"}
                         </p>
+                        {selectedCompanyTaxId ? (
+                          <p className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                            {exportCopy.companyTaxId}: {selectedCompanyTaxId}
+                          </p>
+                        ) : null}
+                        {selectedCompanyAddress ? (
+                          <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
+                            {selectedCompanyAddress}
+                          </p>
+                        ) : null}
                         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          The name and logo show in the PDF header.
+                          The name, tax ID, address, and logo show in the PDF header.
                         </p>
                       </div>
                     </div>
@@ -3294,9 +3487,27 @@ function ProtectedExpenseEditor({
                   </label>
 
                   <label className="block space-y-2">
+                    <span className="text-sm font-medium text-foreground">Department</span>
+                    <Input
+                      className="h-11 rounded-2xl border-white/10 bg-background/75 px-4"
+                      placeholder="Which department is submitting this form?"
+                      type="text"
+                      value={department}
+                      onChange={(event) => {
+                        setPrintError(null);
+                        setDepartment(event.target.value);
+                      }}
+                    />
+                  </label>
+
+                  <label className="block space-y-2">
                     <span className="text-sm font-medium text-foreground">Note</span>
                     <Textarea
-                      className="min-h-28 rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                      className="min-h-28 resize-none overflow-hidden rounded-2xl border-white/10 bg-background/75 px-4 py-3"
+                      data-auto-resize="true"
+                      onInput={(event) => {
+                        resizeTextareaElement(event.currentTarget);
+                      }}
                       placeholder="Optional note for approval or context"
                       value={note}
                       onChange={(event) => {
@@ -3314,12 +3525,13 @@ function ProtectedExpenseEditor({
                     Overview
                   </Badge>
                   <CardTitle className="font-serif text-2xl tracking-tight sm:text-3xl">
-                    {formatCurrency(totalAmount)}
+                    Editing overview
                   </CardTitle>
                   <CardDescription className="text-sm leading-7">
                     {populatedRows.length} filled expense line
                     {populatedRows.length === 1 ? "" : "s"} with {totalReceipts} receipt
-                    photo{totalReceipts === 1 ? "" : "s"} attached.
+                    photo{totalReceipts === 1 ? "" : "s"} attached. The final total stays
+                    in the PDF export.
                   </CardDescription>
                 </CardHeader>
 
@@ -3467,6 +3679,7 @@ function ProtectedExpenseEditor({
         >
           <DialogContent
             className="flex h-[100dvh] w-screen max-w-screen flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-[calc(100vh-2rem)] sm:w-[calc(100vw-2rem)] sm:max-w-[calc(100vw-2rem)] sm:rounded-[2rem] sm:border sm:border-border/60 2xl:max-w-[1600px]"
+            onInteractOutside={(event) => event.preventDefault()}
             showCloseButton={!isSavingPdf}
           >
             <DialogHeader className="border-b border-border/60 bg-[linear-gradient(135deg,rgba(255,255,255,0.06),rgba(255,255,255,0.02))] px-3 py-3 sm:px-6 sm:py-5">
@@ -3638,7 +3851,10 @@ function ProtectedExpenseEditor({
 }
 
 function PrintExpenseFormPage({
+  companyAddress,
+  companyTaxId,
   currentPage,
+  department,
   displayExpenseReference,
   employeeName,
   expenseDate,
@@ -3652,7 +3868,10 @@ function PrintExpenseFormPage({
   totalAmount,
   totalPages,
 }: {
+  companyAddress: string;
+  companyTaxId: string;
   currentPage: number;
+  department: string;
   displayExpenseReference: string;
   employeeName: string;
   expenseDate: string;
@@ -3666,6 +3885,11 @@ function PrintExpenseFormPage({
   totalAmount: number;
   totalPages: number;
 }) {
+  const trimmedCompanyAddress = companyAddress.trim();
+  const hasCompanyAddress = Boolean(trimmedCompanyAddress);
+  const headerAddressWidth = getCompanyAddressHeaderWidth(trimmedCompanyAddress);
+  const headerSideWidth = hasCompanyAddress ? headerAddressWidth : totalPages > 1 ? 144 : 0;
+
   return (
     <section
       className="export-sheet print-card rounded-none bg-white text-black"
@@ -3693,13 +3917,25 @@ function PrintExpenseFormPage({
 
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
+              <div
+                className="min-w-0"
+                style={
+                  headerSideWidth
+                    ? { maxWidth: `calc(100% - ${headerSideWidth + 12}px)` }
+                    : undefined
+                }
+              >
                 <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-black/55">
                   {exportCopy.companyCaption}
                 </p>
                 <h2 className="mt-1 line-clamp-2 font-serif text-[1.14rem] leading-tight">
                   {selectedCompanyName || exportCopy.companyPending}
                 </h2>
+                {companyTaxId ? (
+                  <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-black/60">
+                    {exportCopy.companyTaxId}: {companyTaxId}
+                  </p>
+                ) : null}
                 {exportCopy.formSubtitle ? (
                   <p className="mt-0.5 text-[11px] text-black/65">{exportCopy.formSubtitle}</p>
                 ) : null}
@@ -3708,22 +3944,40 @@ function PrintExpenseFormPage({
                 </p>
               </div>
 
-              {totalPages > 1 ? (
-                <p className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.18em] text-black/55">
-                  {formatFormPageCounter(currentPage, totalPages, exportLanguage)}
-                </p>
+              {hasCompanyAddress || totalPages > 1 ? (
+                <div className="shrink-0 text-right" style={{ width: headerSideWidth }}>
+                  {totalPages > 1 ? (
+                    <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-black/55">
+                      {formatFormPageCounter(currentPage, totalPages, exportLanguage)}
+                    </p>
+                  ) : null}
+                  {hasCompanyAddress ? (
+                    <p
+                      className={`whitespace-pre-line break-words text-[10px] leading-[1.1rem] text-black/65 ${
+                        totalPages > 1 ? "mt-2" : "mt-0.5"
+                      }`}
+                    >
+                      {trimmedCompanyAddress}
+                    </p>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </div>
         </div>
 
-        <div className="mt-2.5 grid grid-cols-2 gap-2.5 text-sm">
+        <div className="mt-2.5 grid grid-cols-[minmax(0,0.4fr)_minmax(0,0.6fr)] gap-x-4 gap-y-2.5 text-sm">
           <InfoLine
             label={exportCopy.date}
             value={formatExportDate(expenseDate, exportLanguage)}
           />
           <InfoLine label={exportCopy.employee} value={employeeName} />
-          <InfoLine label={exportCopy.reference} value={displayExpenseReference} />
+          <InfoLine label={exportCopy.department} value={department || "-"} />
+          <InfoLine
+            label={exportCopy.reference}
+            reserveWritingSpace
+            value={BLANK_PRINT_FIELD_VALUE}
+          />
         </div>
 
         <div className="mt-2 border-b border-black/15 pb-1.5">
@@ -3792,14 +4046,16 @@ function PrintExpenseFormPage({
 
         {showFooter ? (
           <div className="mt-auto pt-5">
-            <div className="mt-2 flex items-center justify-end border-t border-black/25 px-0.5 py-1.5 text-[12px]">
-              <span className="font-medium">{exportCopy.total}:</span>
-              <span className="ml-3 text-sm font-semibold">
+            <div className="mt-2 border-t border-black/25 px-0.5 pb-2 pt-2.5 text-right">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.2em] text-black/55">
+                {exportCopy.total}
+              </p>
+              <p className="mt-2 text-[1.6rem] font-bold leading-none">
                 {formatPrintAmount(totalAmount, exportLanguage)}
-              </span>
+              </p>
             </div>
 
-            <div className="mt-4 grid grid-cols-3 gap-3 text-[9px]">
+            <div className="mt-5 grid grid-cols-3 gap-3 text-[9px]">
               {exportCopy.signatures.map((label) => (
                 <div className="text-center" key={label}>
                   <p className="font-semibold tracking-[0.02em]">{exportCopy.signatureHint}</p>
@@ -4020,10 +4276,12 @@ function EditorMetric({
   label,
   value,
   icon,
+  valueClassName,
 }: {
   label: string;
   value: string;
   icon: ReactNode;
+  valueClassName?: string;
 }) {
   return (
     <div className="rounded-3xl border border-white/10 bg-background/65 p-4">
@@ -4031,16 +4289,24 @@ function EditorMetric({
         <span className="text-primary">{icon}</span>
         {label}
       </div>
-      <p className="mt-3 truncate text-base font-semibold text-foreground">{value}</p>
+      <p
+        className={`mt-3 text-base font-semibold text-foreground ${
+          valueClassName ?? "truncate"
+        }`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
 
 function InfoLine({
   label,
+  reserveWritingSpace,
   value,
 }: {
   label: string;
+  reserveWritingSpace?: boolean;
   value: string;
 }) {
   return (
@@ -4048,8 +4314,14 @@ function InfoLine({
       <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-black/45">
         {label}
       </p>
-      <p className="mt-1 line-clamp-2 border-b border-black/15 pb-1 text-[13px] leading-5">
-        {value}
+      <p
+        className={`border-b border-black/15 pb-1 text-[13px] leading-5 ${
+          reserveWritingSpace
+            ? "mt-2 min-h-[2.55rem]"
+            : "mt-1 line-clamp-2"
+        }`}
+      >
+        {value || "\u00A0"}
       </p>
     </div>
   );
