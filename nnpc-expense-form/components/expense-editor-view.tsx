@@ -996,7 +996,7 @@ async function renderFormPageCanvas(
         context,
         font: "400 10px Arial, sans-serif",
         lineHeight: 14,
-        maxLines: 5,
+        maxLines: Number.MAX_SAFE_INTEGER,
         maxWidth: rightHeaderWidth,
         text: trimmedCompanyAddress,
         x: contentX + contentWidth - rightHeaderWidth,
@@ -1849,8 +1849,16 @@ function ProtectedExpenseEditor({
       const cachedCompanies = readCompaniesCache(nextCacheUserKey);
       const cachedExpenseDay = readExpenseDayCache(nextCacheUserKey, nextExpenseDate);
       const cachedDraft = readExpenseDraftCache(nextCacheUserKey, nextExpenseDate);
+      const savedProfilePromise = getUserProfile(session.accessToken).catch((error: unknown) => {
+        if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) {
+          throw error;
+        }
+
+        return null;
+      });
+
       const [savedProfile, nextCompanies, existingReport] = await Promise.all([
-        getUserProfile(session.accessToken),
+        savedProfilePromise,
         cachedCompanies
           ? Promise.resolve(cachedCompanies)
           : listUserCompanies(session.accessToken),
